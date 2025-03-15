@@ -191,3 +191,11 @@ To solve this problem, here is a plan that may help you write the SQL query.
 {plan}
 """
 
+
+EXTERNAL_KNOWLEDGE_SYSTEM = """
+\n\nExternal Knowledge:
+\n
+{knowledge}
+\n
+"""
+

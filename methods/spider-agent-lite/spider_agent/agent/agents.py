@@ -8,7 +8,7 @@ import uuid
 from http import HTTPStatus
 from io import BytesIO
 from typing import Dict, List
-from spider_agent.agent.prompts import BIGQUERY_SYSTEM, LOCAL_SYSTEM, DBT_SYSTEM, SNOWFLAKE_SYSTEM, REFERENCE_PLAN_SYSTEM
+from spider_agent.agent.prompts import BIGQUERY_SYSTEM, LOCAL_SYSTEM, DBT_SYSTEM, SNOWFLAKE_SYSTEM, REFERENCE_PLAN_SYSTEM,EXTERNAL_KNOWLEDGE_SYSTEM
 from spider_agent.agent.action import Action, Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS
 from spider_agent.envs.spider_agent import Spider_Agent_Env
 from spider_agent.agent.models import call_llm
@@ -17,6 +17,7 @@ from spider_agent.agent.models import call_llm
 from openai import AzureOpenAI
 from typing import Dict, List, Optional, Tuple, Any, TypedDict
 
+from rag_action import RAG_QUERY
 
 
 
@@ -63,6 +64,23 @@ class PromptAgent:
         self.history_messages = []
         self.instruction = self.env.task_config['question']
 
+        external_knowledge_content = None
+        # Check if external knowledge is available
+        if 'external_knowledge' in self.env.task_config:
+            knowledge_file = self.env.task_config['external_knowledge']
+            knowledge_path = os.path.join("../../spider2-lite/resource/documents", knowledge_file)
+
+            if os.path.exists(knowledge_path):
+                # 🔹 Initialize RAG_QUERY instance with the exact document
+                rag_query_action = RAG_QUERY(query=self.instruction, top_k=3)
+
+                # 🔹 Retrieve relevant knowledge **only from the specific file**
+                external_knowledge_content = rag_query_action.retrieve_relevant_knowledge(knowledge_path)
+
+                # 🔹 Add the RAG_QUERY action to the agent's memory
+                self.actions.append(rag_query_action)
+
+        
         if self.env.task_config['type'] == 'Bigquery':
             self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, BIGQUERY_EXEC_SQL, CreateFile, EditFile]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
@@ -84,6 +102,8 @@ class PromptAgent:
             self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=self.reference_plan)
         
 
+        if external_knowledge_content is not None:
+            self.system_message += EXTERNAL_KNOWLEDGE_SYSTEM.format(knowledge=external_knowledge_content)
         
         self.history_messages.append({
             "role": "system",
