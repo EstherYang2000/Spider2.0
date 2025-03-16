@@ -197,7 +197,7 @@ def call_llm(payload):
         return False, code_value
                            
 
-    elif model.startswith("mixtral"):
+    elif model.startswith("mistral"):
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]
         top_p = payload["top_p"]
@@ -219,7 +219,7 @@ def call_llm(payload):
         client = Groq(
             api_key=os.environ.get("GROQ_API_KEY"),
         )
-
+        print(client)
         for i in range(2):
             try:
                 logger.info("Generating content with model: %s", model)

@@ -11,8 +11,11 @@ from tqdm import tqdm
 
 from spider_agent.envs.spider_agent import Spider_Agent_Env
 from spider_agent.agent.agents import PromptAgent
+from spider_agent.agent.self_refinement import SelfRefinementAgent
 
-
+# Ensure the logs directory exists
+if not os.path.exists("logs"):
+    os.makedirs("logs")
 #  Logger Configs {{{ #
 logger = logging.getLogger("spider_agent")
 logger.setLevel(logging.DEBUG)
@@ -45,7 +48,12 @@ logger.addHandler(stdout_handler)
 logger.addHandler(sdebug_handler)
 #  }}} Logger Configs # 
 
+"""
+python run.py --model mistral-saba-24b -s test1 --example_index 0-1
+python run.py --model gpt-4o -s test1 --example_index 0-1
 
+
+"""
 
 def config() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -78,6 +86,10 @@ def config() -> argparse.Namespace:
     parser.add_argument("--dbt_only", action="store_true")
     parser.add_argument("--sf_only", action="store_true")
     
+    # Self-refinement related
+    parser.add_argument("--self_refinement", action="store_true", help="Enable self-refinement for SQL queries")
+    parser.add_argument("--max_refinement_iterations", type=int, default=5, help="Maximum number of refinement iterations")
+    
     
     args = parser.parse_args()
 
@@ -102,6 +114,9 @@ def test(
         
     if args.plan:
         experiment_id = f"{experiment_id}-plan"
+        
+    if args.self_refinement:
+        experiment_id = f"{experiment_id}-self-refinement"
 
     env_config = \
     {
@@ -112,15 +127,28 @@ def test(
         }
     }
     
-    agent = PromptAgent(
-        model=args.model,
-        max_tokens=args.max_tokens,
-        top_p=args.top_p,
-        temperature=args.temperature,
-        max_memory_length=args.max_memory_length,
-        max_steps=args.max_steps,
-        use_plan=args.plan
-    )
+    # Create the appropriate agent based on arguments
+    if args.self_refinement:
+        agent = SelfRefinementAgent(
+            model=args.model,
+            max_tokens=args.max_tokens,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            max_memory_length=args.max_memory_length,
+            max_steps=args.max_steps,
+            use_plan=args.plan,
+            max_refinement_iterations=args.max_refinement_iterations
+        )
+    else:
+        agent = PromptAgent(
+            model=args.model,
+            max_tokens=args.max_tokens,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            max_memory_length=args.max_memory_length,
+            max_steps=args.max_steps,
+            use_plan=args.plan
+        )
     valid_ids = []
     ## load task configs
     assert os.path.exists(args.test_path) and args.test_path.endswith(".jsonl"), f"Invalid test_path, must be a valid jsonl file: {args.test_path}"
