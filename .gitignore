@@ -146,3 +146,13 @@ credentials/
 **/venv/
 **/spider2*/
 
+methods/spider-agent-snow/snowflake_credential.json
+.env
+methods/spider-agent-lite/bigquery_credential.json
+
+
+## output
+**/output/*
+
+# log
+*.log

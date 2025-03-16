@@ -5,7 +5,7 @@ import faiss
 import numpy as np
 import re
 from sentence_transformers import SentenceTransformer
-from .action import Action, remove_quote
+from spider_agent.agent.action import Action, remove_quote
 
 @dataclass
 class RAG_QUERY(Action):
@@ -128,3 +128,19 @@ class RAG_QUERY(Action):
     def __repr__(self) -> str:
         """Returns a structured string representation of the instance."""
         return f'RAG_QUERY(query="{self.query}", top_k={self.top_k})'
+
+
+
+
+if __name__ == "__main__":
+    # Example usage of the RAG_QUERY action
+    knowledge_file = "ga4_obfuscated_sample_ecommerce.events.md"
+    knowledge_path = os.path.join("../../spider2-lite/resource/documents", knowledge_file)
+    instruction = "How many pseudo users were active in the last 7 days but inactive in the last 2 days as of January 7, 2021?"
+
+    if os.path.exists(knowledge_path):
+        rag_query_action = RAG_QUERY(query=instruction, top_k=3)
+        external_knowledge_content = rag_query_action.retrieve_relevant_knowledge(knowledge_path)
+        print(external_knowledge_content)
+    else:
+        print(f"Knowledge file '{knowledge_file}' not found.")

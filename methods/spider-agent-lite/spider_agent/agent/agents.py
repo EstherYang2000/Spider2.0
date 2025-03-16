@@ -17,7 +17,7 @@ from spider_agent.agent.models import call_llm
 from openai import AzureOpenAI
 from typing import Dict, List, Optional, Tuple, Any, TypedDict
 
-from rag_action import RAG_QUERY
+from spider_agent.agent.rag_action import RAG_QUERY
 
 
 
@@ -72,13 +72,13 @@ class PromptAgent:
 
             if os.path.exists(knowledge_path):
                 # 🔹 Initialize RAG_QUERY instance with the exact document
-                rag_query_action = RAG_QUERY(query=self.instruction, top_k=3)
+                rag_query_action = RAG_QUERY(query=self.instruction, top_k=9)
 
                 # 🔹 Retrieve relevant knowledge **only from the specific file**
                 external_knowledge_content = rag_query_action.retrieve_relevant_knowledge(knowledge_path)
 
                 # 🔹 Add the RAG_QUERY action to the agent's memory
-                self.actions.append(rag_query_action)
+                # self.actions.append(rag_query_action)
 
         
         if self.env.task_config['type'] == 'Bigquery':

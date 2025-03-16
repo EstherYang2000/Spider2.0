@@ -17,6 +17,8 @@ import snowflake.connector
 import logging
 
 import sys
+
+# Redirects stdout and stderr to both console and a log file
 class TeeOutput:
     def __init__(self, filename):
         self.console = sys.stdout
@@ -32,15 +34,19 @@ class TeeOutput:
     
     def close(self):
         self.file.close()
-
+        
+# Redirecting standard output and error to a log file
 sys.stdout = TeeOutput('log.txt')
 sys.stderr = sys.stdout
 
+# Global variable to track total GB processed in BigQuery
 TOTAL_GB_PROCESSED = 0.0
 
-
+# Dictionary to store byte outputs
 byte_output_dict = {}
 
+# Load JSONL file into a dictionary
+# Each entry is indexed by 'instance_id'
 def load_jsonl_to_dict(jsonl_file):
     data_dict = {}
     with open(jsonl_file, 'r') as file:
@@ -50,13 +56,14 @@ def load_jsonl_to_dict(jsonl_file):
             data_dict[instance_id] = item
     return data_dict
 
+# Load JSON list file into a dictionary
 def load_json_list_to_dict(json_file_path):
     with open(json_file_path, 'r', encoding='utf-8') as file:
         data_list = json.load(file)
     data_dict = {item['instance_id']: item for item in data_list}
     return data_dict
 
-
+# Compare multiple pandas tables to check if at least one match exists
 def compare_multi_pandas_table(pred, multi_gold, multi_condition_cols=[], multi_ignore_order=False):
     # print('multi_condition_cols', multi_condition_cols)
 
@@ -73,7 +80,7 @@ def compare_multi_pandas_table(pred, multi_gold, multi_condition_cols=[], multi_
         
     
 
-
+# Compare two pandas tables based on conditions
 def compare_pandas_table(pred, gold, condition_cols=[], ignore_order=False):
     """_summary_
 
@@ -123,7 +130,7 @@ def compare_pandas_table(pred, gold, condition_cols=[], ignore_order=False):
 
     return score
 
-
+# Execute BigQuery SQL and return results
 def get_bigquery_sql_result(sql_query, is_save, save_dir=None, file_name="result.csv"):
     """
     is_save = True, output a 'result.csv'
@@ -161,7 +168,7 @@ def get_bigquery_sql_result(sql_query, is_save, save_dir=None, file_name="result
         return False, str(e)
     return True, None
 
-
+# Fetch SQL query results from Snowflake
 def get_snowflake_sql_result(sql_query, database_id, is_save, save_dir=None, file_name="result.csv"):
     """
     is_save = True, output a 'result.csv'
@@ -190,7 +197,7 @@ def get_snowflake_sql_result(sql_query, database_id, is_save, save_dir=None, fil
         print("Error occurred while fetching data: ", e)  
         return False, str(e)
 
-
+# Fetch SQLite query results
 def get_sqlite_result(db_path, query, save_dir=None, file_name="result.csv", chunksize=500):
     conn = sqlite3.connect(db_path)
     memory_conn = sqlite3.connect(':memory:')
@@ -219,7 +226,7 @@ def get_sqlite_result(db_path, query, save_dir=None, file_name="result.csv", chu
     
     return True, None
 
-
+# Main evaluation function
 def evaluate_spider2sql(args):
     mode = args.mode
     gold_sql_dir = os.path.join(args.gold_dir, "sql")
@@ -413,3 +420,8 @@ if __name__ == "__main__":
 
     
     evaluate_spider2sql(args)
+    
+    
+"""
+python evaluate.py --result_dir gpt-4o-test1 --mode exec_result --mode exec_result
+"""
