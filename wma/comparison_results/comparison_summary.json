@@ -1,0 +1,161 @@
+{
+  "test_cases": 5,
+  "original_wma": {
+    "accuracy": 0.6,
+    "final_weights": {
+      "expert1": 1.0,
+      "expert2": 0.9702989999999999,
+      "expert3": 0.96059601,
+      "expert4": 0.96059601
+    }
+  },
+  "cross_consistency_wma": {
+    "accuracy": 0.4,
+    "final_weights": {
+      "expert1": 1.0680648148148149,
+      "expert2": 1.0708869624750004,
+      "expert3": 1.0091594749500001,
+      "expert4": 1.0427981241150004
+    },
+    "consistency_scores": {
+      "expert1": 0.26666666666666666,
+      "expert2": 0.4,
+      "expert3": 0.2,
+      "expert4": 0.3333333333333333
+    }
+  },
+  "case_by_case_comparison": [
+    {
+      "case": 1,
+      "question": "Find all employees in the IT department",
+      "original_wma_correct": true,
+      "cross_consistency_wma_correct": true,
+      "original_wma_experts": [
+        "expert4",
+        "expert2",
+        "expert1"
+      ],
+      "cross_consistency_wma_experts": [
+        "expert4",
+        "expert2",
+        "expert1"
+      ],
+      "expert_correctness": {
+        "expert1": true,
+        "expert2": true,
+        "expert3": false,
+        "expert4": true
+      },
+      "consistency_scores": {
+        "expert1": 0.6666666666666666,
+        "expert2": 0.6666666666666666,
+        "expert3": 0.0,
+        "expert4": 0.6666666666666666
+      }
+    },
+    {
+      "case": 2,
+      "question": "List all products with price greater than $100",
+      "original_wma_correct": false,
+      "cross_consistency_wma_correct": false,
+      "original_wma_experts": [
+        "expert4",
+        "expert2"
+      ],
+      "cross_consistency_wma_experts": [
+        "expert4",
+        "expert2"
+      ],
+      "expert_correctness": {
+        "expert1": true,
+        "expert2": false,
+        "expert3": true,
+        "expert4": false
+      },
+      "consistency_scores": {
+        "expert1": 0.3333333333333333,
+        "expert2": 0.3333333333333333,
+        "expert3": 0.3333333333333333,
+        "expert4": 0.3333333333333333
+      }
+    },
+    {
+      "case": 3,
+      "question": "Find the total revenue for each product category",
+      "original_wma_correct": false,
+      "cross_consistency_wma_correct": false,
+      "original_wma_experts": [
+        "expert4",
+        "expert2",
+        "expert3"
+      ],
+      "cross_consistency_wma_experts": [
+        "expert4",
+        "expert2",
+        "expert3"
+      ],
+      "expert_correctness": {
+        "expert1": true,
+        "expert2": false,
+        "expert3": false,
+        "expert4": false
+      },
+      "consistency_scores": {
+        "expert1": 0.0,
+        "expert2": 0.6666666666666666,
+        "expert3": 0.6666666666666666,
+        "expert4": 0.6666666666666666
+      }
+    },
+    {
+      "case": 4,
+      "question": "Count the number of orders placed in January 2023",
+      "original_wma_correct": true,
+      "cross_consistency_wma_correct": false,
+      "original_wma_experts": [
+        "expert1"
+      ],
+      "cross_consistency_wma_experts": [
+        "expert2"
+      ],
+      "expert_correctness": {
+        "expert1": true,
+        "expert2": false,
+        "expert3": false,
+        "expert4": false
+      },
+      "consistency_scores": {
+        "expert1": 0.0,
+        "expert2": 0.0,
+        "expert3": 0.0,
+        "expert4": 0.0
+      }
+    },
+    {
+      "case": 5,
+      "question": "Find the average salary of employees in each department",
+      "original_wma_correct": true,
+      "cross_consistency_wma_correct": true,
+      "original_wma_experts": [
+        "expert2",
+        "expert1"
+      ],
+      "cross_consistency_wma_experts": [
+        "expert2",
+        "expert1"
+      ],
+      "expert_correctness": {
+        "expert1": true,
+        "expert2": true,
+        "expert3": false,
+        "expert4": false
+      },
+      "consistency_scores": {
+        "expert1": 0.3333333333333333,
+        "expert2": 0.3333333333333333,
+        "expert3": 0.0,
+        "expert4": 0.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+[
+  {
+    "case": 1,
+    "question": "Find all employees in the IT department",
+    "chosen_sql": "SELECT * FROM employees WHERE department = 'IT'",
+    "chosen_experts": [
+      "expert4",
+      "expert2",
+      "expert1"
+    ],
+    "is_correct": true,
+    "expert_correctness": {
+      "expert1": true,
+      "expert2": true,
+      "expert3": false,
+      "expert4": true
+    },
+    "expert_weights": {
+      "expert1": 1.0333333333333334,
+      "expert2": 1.0333333333333334,
+      "expert3": 0.99,
+      "expert4": 1.0333333333333334
+    },
+    "consistency_scores": {
+      "expert1": 0.6666666666666666,
+      "expert2": 0.6666666666666666,
+      "expert3": 0.0,
+      "expert4": 0.6666666666666666
+    }
+  },
+  {
+    "case": 2,
+    "question": "List all products with price greater than $100",
+    "chosen_sql": "SELECT * FROM items WHERE price > 100",
+    "chosen_experts": [
+      "expert4",
+      "expert2"
+    ],
+    "is_correct": false,
+    "expert_correctness": {
+      "expert1": true,
+      "expert2": false,
+      "expert3": true,
+      "expert4": false
+    },
+    "expert_weights": {
+      "expert1": 1.0505555555555557,
+      "expert2": 1.0400500000000001,
+      "expert3": 1.0065,
+      "expert4": 1.0400500000000001
+    },
+    "consistency_scores": {
+      "expert1": 0.3333333333333333,
+      "expert2": 0.3333333333333333,
+      "expert3": 0.3333333333333333,
+      "expert4": 0.3333333333333333
+    }
+  },
+  {
+    "case": 3,
+    "question": "Find the total revenue for each product category",
+    "chosen_sql": "SELECT category, SUM(revenue) FROM sales GROUP BY category",
+    "chosen_experts": [
+      "expert4",
+      "expert2",
+      "expert3"
+    ],
+    "is_correct": false,
+    "expert_correctness": {
+      "expert1": true,
+      "expert2": false,
+      "expert3": false,
+      "expert4": false
+    },
+    "expert_weights": {
+      "expert1": 1.0505555555555557,
+      "expert2": 1.0639711500000004,
+      "expert3": 1.0296495,
+      "expert4": 1.0639711500000004
+    },
+    "consistency_scores": {
+      "expert1": 0.0,
+      "expert2": 0.6666666666666666,
+      "expert3": 0.6666666666666666,
+      "expert4": 0.6666666666666666
+    }
+  },
+  {
+    "case": 4,
+    "question": "Count the number of orders placed in January 2023",
+    "chosen_sql": "SELECT COUNT(*) FROM sales WHERE date >= '2023-01-01' AND date <= '2023-01-31'",
+    "chosen_experts": [
+      "expert2"
+    ],
+    "is_correct": false,
+    "expert_correctness": {
+      "expert1": true,
+      "expert2": false,
+      "expert3": false,
+      "expert4": false
+    },
+    "expert_weights": {
+      "expert1": 1.0505555555555557,
+      "expert2": 1.0533314385000003,
+      "expert3": 1.0193530050000001,
+      "expert4": 1.0533314385000003
+    },
+    "consistency_scores": {
+      "expert1": 0.0,
+      "expert2": 0.0,
+      "expert3": 0.0,
+      "expert4": 0.0
+    }
+  },
+  {
+    "case": 5,
+    "question": "Find the average salary of employees in each department",
+    "chosen_sql": "SELECT department, AVG(salary) FROM employees GROUP BY department",
+    "chosen_experts": [
+      "expert2",
+      "expert1"
+    ],
+    "is_correct": true,
+    "expert_correctness": {
+      "expert1": true,
+      "expert2": true,
+      "expert3": false,
+      "expert4": false
+    },
+    "expert_weights": {
+      "expert1": 1.0680648148148149,
+      "expert2": 1.0708869624750004,
+      "expert3": 1.0091594749500001,
+      "expert4": 1.0427981241150004
+    },
+    "consistency_scores": {
+      "expert1": 0.3333333333333333,
+      "expert2": 0.3333333333333333,
+      "expert3": 0.0,
+      "expert4": 0.0
+    }
+  }
+]

@@ -1,0 +1,1 @@
+# WMA package initialization
