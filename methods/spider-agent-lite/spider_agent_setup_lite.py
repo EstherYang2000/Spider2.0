@@ -101,9 +101,16 @@ def add_agent_setting():
         example_path = os.path.join(agent_dir_path, f"{instance_id}")
         if not os.path.exists(example_path):
             os.makedirs(example_path)
-        external_knowledge = example['external_knowledge']
-        if external_knowledge != None:
-            shutil.copy(os.path.join(DOCUMENT_PATH, external_knowledge), example_path)
+        external_knowledge = example.get('external_knowledge', None)
+        if external_knowledge is not None and isinstance(external_knowledge, str) and external_knowledge.strip() != "":
+            src_path = os.path.join(DOCUMENT_PATH, external_knowledge.strip())
+            if os.path.exists(src_path):
+                shutil.copy(src_path, example_path)
+            else:
+                print(f"[WARNING] Document not found: {src_path}, skipping.")
+        else:
+            # Optionally, log or skip if external_knowledge is None or empty
+            pass
 
 
     for example in examples:
@@ -178,4 +185,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     add_agent_setting()
-

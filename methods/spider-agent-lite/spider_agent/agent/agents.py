@@ -66,7 +66,7 @@ class PromptAgent:
 
         external_knowledge_content = None
         # Check if external knowledge is available
-        if 'external_knowledge' in self.env.task_config:
+        if 'external_knowledge' in self.env.task_config and self.env.task_config['external_knowledge'] is not None:
             knowledge_file = self.env.task_config['external_knowledge']
             knowledge_path = os.path.join("../../spider2-lite/resource/documents", knowledge_file)
 
@@ -98,9 +98,30 @@ class PromptAgent:
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = DBT_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
         
+        # --- Planning and Critique Integration ---
         if self.use_plan:
             self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=self.reference_plan)
-        
+        else:
+            # If no plan is provided, generate one using PlannerAgent and critique using CritiqueAgent
+            try:
+                from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
+                planner = PlannerAgent(model=self.model)
+                critique = CritiqueAgent(model=self.model)
+                # Prepare schema string and evidence
+                schema_string = self.env.task_config.get('schema', '')
+                evidence = self.env.task_config.get('evidence', '')
+                # Generate plan
+                plan = planner.generate_plan(self.instruction, schema_string, evidence)
+                self.reference_plan = plan
+                self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=plan)
+                # Optionally, generate a critique of an initial SQL (if available)
+                initial_sql = self.env.task_config.get('initial_sql', '')
+                if initial_sql:
+                    critique_msg = critique.critique_sql(initial_sql, plan, self.instruction, schema_string, evidence)
+                    self.system_message += f"\n[CRITIQUE]\n{critique_msg}\n"
+            except Exception as e:
+                import traceback
+                self.system_message += f"\n[ERROR: Failed to auto-generate plan/critique: {e}\n{traceback.format_exc()}]"
 
         if external_knowledge_content is not None:
             self.system_message += EXTERNAL_KNOWLEDGE_SYSTEM.format(knowledge=external_knowledge_content)
@@ -200,21 +221,41 @@ class PromptAgent:
         if len(self.history_messages) > self.max_memory_length*2+1:
             self.history_messages = [self.history_messages[0]] + self.history_messages[-self.max_memory_length*2:]
     
-    def parse_action(self, output: str) -> Action:
-        """ Parse action from text """
-        if output is None or len(output) == 0:
-            pass
-        action_string = ""
-        patterns = [r'["\']?Action["\']?:? (.*?)Observation',r'["\']?Action["\']?:? (.*?)Thought', r'["\']?Action["\']?:? (.*?)$', r'^(.*?)Observation']
+    def parse_action(self, output) -> Action:
+        """ Parse action from text or dict (robust for LLM output) """
+        import re
 
-        for p in patterns:
-            match = re.search(p, output, flags=re.DOTALL)
-            if match:
-                action_string = match.group(1).strip()
-                break
-        if action_string == "":
-            action_string = output.strip()
-        
+        action_string = None
+        logger.info("Output: %s", output)
+        # Multi-line robust action extraction
+        multiline_patterns = [
+            r'Action\s*:\s*((?:.|\n)*?)(?=^Thought:|^Observation:|\Z)',  # up to next block or end
+            r'Action\s*:\s*((?:.|\n)*)'  # fallback: grab everything after Action:
+        ]
+        # If output is a dict (e.g., {'thought':..., 'action':..., 'response':...})
+        if isinstance(output, dict):
+            action_string = output.get('action')
+            # If action string is None or empty, try to extract from response
+            if not action_string or action_string == "None":
+                resp = output.get('response', '')
+                for p in multiline_patterns:
+                    match = re.search(p, resp, flags=re.DOTALL | re.MULTILINE)
+                    if match:
+                        action_string = match.group(1).strip()
+                        break
+                if not action_string:
+                    action_string = resp.strip()
+        else:
+            # output is a string
+            action_string = ""
+            for p in multiline_patterns:
+                match = re.search(p, output, flags=re.DOTALL | re.MULTILINE)
+                if match:
+                    action_string = match.group(1).strip()
+                    break
+            if not action_string:
+                action_string = output.strip()
+
         output_action = None
         for action_cls in self._AVAILABLE_ACTION_CLASSES:
             action = action_cls.parse_action_from_text(action_string)
@@ -228,8 +269,8 @@ class PromptAgent:
                 if action is not None:
                     output_action = action
                     break
-        
         return output_action
+
     
 
     

@@ -48,12 +48,7 @@ logger.addHandler(stdout_handler)
 logger.addHandler(sdebug_handler)
 #  }}} Logger Configs # 
 
-"""
-python run.py --model mistral-saba-24b -s test1 --example_index 0-1
-python run.py --model gpt-4o -s test1 --example_index 0-1
 
-
-"""
 
 def config() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -68,7 +63,7 @@ def config() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="gpt-4o")
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--max_tokens", type=int, default=2500)
+    parser.add_argument("--max_tokens", type=int, default=1024)
     parser.add_argument("--stop_token", type=str, default=None)
     
     # example config
@@ -267,3 +262,12 @@ if __name__ == '__main__':
     args = config()
     
     test(args)
+
+"""
+python run.py --model mistral-saba-24b -s test1 --example_index 0-1
+python run.py --model gemini-2.5-pro-exp-03-25 -s test1 --example_index 0-10 
+python run.py --model gemini-2.5-pro-exp-03-25 -s test1 --example_index 0-10 
+python run.py --model llamaapi_3.3 -s test1 --example_index 0-1 --self_refinement
+python run.py --model deepSeek-R1 -s test1 --example_index 0-1 --self_refinement
+python run.py --model grok-3-beta -s test1 --example_index 0-1 --self_refinement
+"""

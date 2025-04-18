@@ -54,6 +54,7 @@ def postprocess(args):
     results_metadata = []
         
     for instance_id in os.listdir(output_dir):
+        print(f"Processing instance_id: {instance_id}")
         if not os.path.isdir(os.path.join(output_dir, instance_id)):
             continue
         json_file_path = os.path.join(output_dir, instance_id, "spider", "result.json")
@@ -136,3 +137,10 @@ if __name__ == '__main__':
     parser.add_argument("--results_folder_name", type=str, default="../../spider2/evaluation_suite/gpt-4-try1", help="Directory containing gold standard files")
     args = parser.parse_args()
     postprocess(args)
+    
+    
+    """
+    python get_spider2lite_submission_data.py \
+        --experiment_suffix gemini-2.5-pro-exp-03-25-test1   \
+        --results_folder_name ../../spider2-lite/evaluation_suite/gemini-2.5-pro-exp-03-25-test1
+    """

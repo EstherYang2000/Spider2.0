@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
 from spider_agent.agent.agents import PromptAgent
+from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
 from spider_agent.agent.action import Terminate, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL
 from spider_agent.agent.models import call_llm
 
@@ -17,7 +18,87 @@ class RefinementResult:
     is_empty: bool = False
     error: bool = False
 
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import faiss
+
+class RefinementLogRAG:
+    def __init__(self, log_path="refinement_history.jsonl", model_name="all-MiniLM-L6-v2"):
+        self.log_path = log_path
+        self.model = SentenceTransformer(model_name)
+        self.logs = []
+        self.embeddings = None
+        self._load_and_embed_logs()
+
+    def _load_and_embed_logs(self):
+        import os, json
+        self.logs = []
+        if not os.path.exists(self.log_path):
+            self.embeddings = None
+            return
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    case = json.loads(line)
+                    self.logs.append(case)
+                except Exception:
+                    continue
+        if self.logs:
+            texts = [case.get("original_sql", "") + " " + case.get("refined_sql", "") for case in self.logs]
+            self.embeddings = self.model.encode(texts, convert_to_numpy=True)
+            self.index = faiss.IndexFlatL2(self.embeddings.shape[1])
+            self.index.add(self.embeddings)
+        else:
+            self.embeddings = None
+
+    def retrieve_similar(self, sql_query, top_k=2):
+        if not self.logs or self.embeddings is None:
+            return []
+        query_emb = self.model.encode([sql_query], convert_to_numpy=True)
+        _, indices = self.index.search(query_emb, top_k)
+        return [self.logs[idx] for idx in indices[0] if idx < len(self.logs)]
+
+
 class SelfRefinementAgent(PromptAgent):
+    def log_refinement_case(self, original_sql, refined_sql, error, success):
+        import json
+        record = {
+            "original_sql": original_sql,
+            "refined_sql": refined_sql,
+            "error": error,
+            "success": success
+        }
+        try:
+            with open(self.refinement_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to log refinement case: {e}")
+
+    def retrieve_similar_refinements(self, sql_query, top_k=2):
+        """Retrieve similar past refinements using semantic vector search (RAG)."""
+        if not hasattr(self, "_refinement_rag") or self._refinement_rag is None:
+            self._refinement_rag = RefinementLogRAG(self.refinement_log_path)
+        # Always reload in case log updated (can optimize if needed)
+        self._refinement_rag._load_and_embed_logs()
+        return self._refinement_rag.retrieve_similar(sql_query, top_k)
+
+    def analyze_sql_error(self, error_msg):
+        msg = error_msg.lower() if error_msg else ""
+        if "syntax error" in msg or "parse error" in msg:
+            return "Syntax error: Please check the SQL syntax."
+        elif "no such table" in msg or "table not found" in msg:
+            return "Table not found: Please check the table name or database."
+        elif ("column" in msg and "not found" in msg) or ("unknown column" in msg):
+            return "Column not found: Please check the column names in SELECT/FROM/WHERE clauses."
+        elif "permission denied" in msg or "access denied" in msg:
+            return "Permission denied: Please check the database access permissions."
+        elif "timeout" in msg:
+            return "Query timeout: Please optimize the SQL or check the data volume."
+        elif "division by zero" in msg:
+            return "Division by zero error: Please check the calculation expressions."
+        else:
+            return "Other error: Please review the message and fix accordingly."
+
     """
     Extension of PromptAgent with self-refinement capabilities.
     This agent can iteratively refine SQL queries based on execution results
@@ -44,15 +125,18 @@ class SelfRefinementAgent(PromptAgent):
             max_steps=max_steps,
             use_plan=use_plan
         )
-        
         self.max_refinement_iterations = max_refinement_iterations
         self.refinement_iterations = []
         self.consecutive_empty_results = 0
         self.previous_queries = set()
-        
+        self.refinement_log_path = "refinement_history.jsonl"  # for self-learning
+        self.planner_agent = PlannerAgent(model=model)
+        self.critique_agent = CritiqueAgent(model=model)
+        self.current_plan = None
+
     def run(self):
         """
-        Override the run method to include self-refinement logic.
+        Override the run method to include MCP loop: Planning, Critique, and Multi-step Refinement.
         """
         assert self.env is not None, "Environment is not set."
         result = ""
@@ -62,11 +146,28 @@ class SelfRefinementAgent(PromptAgent):
         retry_count = 0
         last_action = None
         repeat_action = False
-        
-        # First run to get initial SQL query
+        sql_query = None
+        critique_msg = None
+        plan_generated = False
+        previous_results = []
+
+        # 1. Always generate a plan at the start
+        if not self.current_plan:
+            schema_string = self.env.task_config.get('schema', '')
+            evidence = self.env.task_config.get('evidence', '')
+            question = self.env.task_config.get('question', '')
+            self.current_plan = self.planner_agent.generate_plan(question, schema_string, evidence)
+            logger.info(f"[MCP] Generated Plan: {self.current_plan}")
+
+        # 2. MCP Loop: SQL generation, critique, refinement
         while not done and step_idx < self.max_steps:
+            # Generate SQL (or other action) based on the plan and last critique
+            prompt_prefix = f"Plan:\n{self.current_plan}"
+            if critique_msg:
+                prompt_prefix += f"\nPrevious Critique:\n{critique_msg}"
+            # Use PromptAgent's predict with the plan and critique context
             _, action = self.predict(obs)
-            
+
             if action is None:
                 logger.info("Failed to parse action from response, try again.")
                 retry_count += 1
@@ -74,32 +175,34 @@ class SelfRefinementAgent(PromptAgent):
                     logger.info("Failed to parse action from response, stop.")
                     break
                 obs = "Failed to parse action from your response, make sure you provide a valid action."
-            else:
-                logger.info("Step %d: %s", step_idx + 1, action)
-                
-                # Check if this is a SQL execution action
-                if isinstance(action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)):
-                    # Start self-refinement process
-                    refined_action, refinement_obs = self.perform_self_refinement(action)
-                    
-                    if refined_action is not None:
-                        # Use the refined action instead
-                        action = refined_action
-                        obs = refinement_obs
-                        done = isinstance(action, Terminate)
-                    else:
-                        # If refinement failed, continue with original action
-                        obs, done = self.env.step(action)
-                elif last_action is not None and last_action == action:
-                    if repeat_action:
-                        return False, "ERROR: Repeated action"
-                    else:
-                        obs = "The action is the same as the last one, you MUST provide a DIFFERENT SQL code or Python Code or different action. you MUST provide a DIFFERENT SQL code or Python Code or different action. you MUST provide a DIFFERENT SQL code or Python Code or different action."
-                        repeat_action = True
+                continue
+
+            logger.info("Step %d: %s", step_idx + 1, action)
+            # Extract SQL query string if action is SQL execution
+            sql_query = getattr(action, 'sql_query', None)
+
+            # 3. Critique the SQL after each generation
+            critique_msg = None
+            if sql_query:
+                schema_string = self.env.task_config.get('schema', '')
+                evidence = self.env.task_config.get('evidence', '')
+                question = self.env.task_config.get('question', '')
+                critique_msg = self.critique_agent.critique_sql(sql_query, self.current_plan, question, schema_string, evidence)
+                logger.info(f"[MCP] Critique: {critique_msg}")
+
+            if last_action is not None and last_action == action:
+                if repeat_action:
+                    return False, "ERROR: Repeated action"
                 else:
-                    obs, done = self.env.step(action)
-                    last_action = action
-                    repeat_action = False
+                    obs = "The action is the same as the last one, you MUST provide a DIFFERENT SQL code or Python Code or different action."
+                    repeat_action = True
+            else:
+                obs, done = self.env.step(action)
+                last_action = action
+                repeat_action = False
+
+            # Optionally: Use critique to refine plan (advanced, not default)
+            # (You can add logic here to update self.current_plan based on repeated critique)
 
             if done:
                 if isinstance(action, Terminate):
@@ -109,6 +212,7 @@ class SelfRefinementAgent(PromptAgent):
             step_idx += 1
 
         return done, result
+
     
     def perform_self_refinement(self, action) -> Tuple[Optional[Any], str]:
         """
@@ -307,21 +411,26 @@ class SelfRefinementAgent(PromptAgent):
     def _should_terminate_refinement(self, current_result: RefinementResult, previous_results: List[RefinementResult]) -> bool:
         """
         Determine if refinement should be terminated based on the termination conditions.
-        
-        Args:
-            current_result: The current refinement result
-            previous_results: List of previous refinement results
-            
-        Returns:
-            True if refinement should be terminated, False otherwise
+        Enhanced: Handles consecutive errors, logs error types, and avoids infinite error loops.
         """
+        # Track consecutive errors
+        if not hasattr(self, 'consecutive_error_count'):
+            self.consecutive_error_count = 0
+        
         # Condition 1: Error in the current result
         if current_result.error:
+            self.consecutive_error_count += 1
+            logger.warning(f"[Refinement] Error detected in result (count={self.consecutive_error_count}): {current_result.result}")
+            # If too many consecutive errors, terminate refinement
+            if self.consecutive_error_count >= 3:
+                logger.error("Too many consecutive errors, terminating refinement.")
+                return True
             return False
+        else:
+            self.consecutive_error_count = 0
         
         # Condition 2: Self-consistency - same result twice
         if len(previous_results) >= 2:
-            # Check if any previous result matches the current result
             for i in range(len(previous_results) - 1):
                 prev_result = previous_results[i]
                 if (not prev_result.error and not prev_result.is_empty and 
@@ -342,32 +451,40 @@ class SelfRefinementAgent(PromptAgent):
         
         return False
     
+    import pandas as pd
+    from io import StringIO
+    from difflib import SequenceMatcher
+
     def _results_are_equivalent(self, result1: str, result2: str) -> bool:
         """
-        Check if two SQL results are equivalent.
-        This is a simplified implementation and might need to be enhanced
-        for more complex result comparison.
-        
-        Args:
-            result1: First result string
-            result2: Second result string
-            
-        Returns:
-            True if results are equivalent, False otherwise
+        Compare two SQL results using DataFrame equality, with fallback to string similarity.
         """
-        # Extract data rows from results (simplified)
-        def extract_data(result):
-            # This is a simplified extraction - in a real implementation,
-            # you would parse the actual data rows from the result
-            lines = result.strip().split('\n')
-            data_lines = [line for line in lines if '|' in line and not line.startswith('+')]
-            return '\n'.join(data_lines)
-        
-        data1 = extract_data(result1)
-        data2 = extract_data(result2)
-        
-        return data1 == data2
-    
+        def to_df(result):
+            lines = [line for line in result.strip().split('\n') if '|' in line and not line.startswith('+')]
+            if not lines:
+                return None
+            columns = [col.strip() for col in lines[0].split('|') if col.strip()]
+            data = []
+            for line in lines[1:]:
+                row = [cell.strip() for cell in line.split('|') if cell.strip()]
+                if row:
+                    data.append(row)
+            try:
+                df = pd.DataFrame(data, columns=columns)
+                df = df.sort_values(by=columns).reset_index(drop=True)
+                return df
+            except Exception:
+                return None
+        df1 = to_df(result1)
+        df2 = to_df(result2)
+        if df1 is not None and df2 is not None:
+            return df1.equals(df2)
+        # fallback: string similarity
+        similarity = SequenceMatcher(None, result1.strip(), result2.strip()).ratio()
+        return similarity > 0.95
+
+    # Only one _should_terminate_refinement method should exist. Remove duplicate/conflicting definitions.
+
     def _generate_refinement_prompt(self, sql_query: str, observation: str, previous_results: List[RefinementResult]) -> str:
         """
         Generate a prompt for the LLM to refine the SQL query.
@@ -382,87 +499,38 @@ class SelfRefinementAgent(PromptAgent):
         """
         prompt = f"""You are an expert SQL developer. I need your help to refine the following SQL query based on the execution results.
 
-Task: {self.env.task_config['question']}
+        Task: {self.env.task_config['question']}
 
-Current SQL Query:
-```sql
-{sql_query}
-```
+        Current SQL Query:
+        ```sql
+        {sql_query}
+        ```
 
-Execution Result:
-```
-{observation}
-```
+        Execution Result:
+        ```
+        {observation}
+        ```
 
-SQL Refinement Guidelines:
-1. Carefully analyze the error messages or empty results
-2. Check for syntax errors, incorrect table names, or missing joins
-3. Ensure column names are correct and properly referenced
-4. Verify that filtering conditions are appropriate for the task
-5. Consider using Common Table Expressions (CTEs) to break down complex logic
-6. Make sure aggregation functions are used correctly
-7. Ensure the output column names match what's expected in the task
-8. For date-based queries, verify the date format and filtering approach
-9. For BigQuery tables with date suffixes, use _TABLE_SUFFIX for filtering when appropriate
-
-Remember that the goal is to produce a working query that correctly answers the original question.
-
-Previous Refinement Attempts:
-"""
-        
-        # Add previous refinement attempts
-        for i, result in enumerate(previous_results[:-1], 1):  # Skip the current result
-            prompt += f"""
-Attempt {i}:
-```sql
-{result.sql_query}
-```
-
-Result:
-```
-{result.result}
-```
-"""
-        
-        # Add instructions based on the current situation
-        if previous_results[-1].error:
-            prompt += """
-The current query has an error. Please fix the syntax or logical errors in the query.
-
-Common errors to check for:
-- Incorrect table or column names
-- Missing JOIN conditions
-- Syntax errors in functions or expressions
-- Incorrect data types in comparisons
-- Missing GROUP BY clauses when using aggregation functions
-"""
-        elif previous_results[-1].is_empty:
-            prompt += """
-The current query returned empty results. Please modify the query to return meaningful results.
-
-Possible issues to address:
-- Filtering conditions might be too restrictive
-- JOINs might be eliminating all rows
-- Table names or paths might be incorrect
-- Date formats or ranges might be incorrect
-"""
+        SQL Refinement Guidelines:
+        1. Carefully analyze the error messages or empty results
+        2. Check for syntax errors, incorrect table names, or missing joins
+        3. Ensure column names are correct and properly referenced
+        4. Verify that filtering conditions are appropriate for the task
+        5. Consider using Common Table Expressions (CTEs) to break down complex logic
+        6. Make sure aggregation functions are used correctly
+        7. Ensure the output column names match what's expected in the task
+        8. For date-based queries, verify the date format and filtering approach
+        9. For BigQuery tables with date suffixes, use _TABLE_SUFFIX for filtering when appropriate"""
+        if previous_results and len(previous_results) > 1:
+            prompt += "\nPrevious Refinement Attempts:\n"
+            for idx, res in enumerate(previous_results[:-1]):
+                prompt += f"- Iteration {idx+1}: SQL: {res.sql_query[:120]}... | Result: {res.result[:120]}...\n"
         else:
-            prompt += """
-The current query executed successfully but the results may not be correct for the task.
-
-Consider these improvements:
-- Check if the logic correctly implements the requirements
-- Verify that column selections match what's needed
-- Ensure aggregations are calculating the right metrics
-- Check if the output format matches what's expected
-"""
+            prompt += "\nNo previous refinement results.\n"
         
-        prompt += """
-Please provide a refined SQL query that addresses the issues. Return ONLY the SQL query without any explanations or markdown formatting.
-"""
-        
+        prompt += "\nPlease provide a refined SQL query that addresses the issues. Return ONLY the SQL query without any explanations or markdown formatting.\n"
         return prompt
-    
+
     def _call_llm_for_refinement(self, prompt: str) -> Tuple[bool, str]:
         """
         Call the LLM to refine the SQL query.
@@ -539,10 +607,8 @@ Please provide a refined SQL query that addresses the issues. Return ONLY the SQ
         non_error_indices = [i for i, result in enumerate(results) if not result.error]
         if non_error_indices:
             return non_error_indices[-1]
-        
         # If all have errors, return the first result (original query)
         return 0
-    
     def get_trajectory(self):
         """
         Override get_trajectory to include refinement information.

@@ -424,5 +424,11 @@ if __name__ == "__main__":
     
     
 """
-python evaluate.py --result_dir gpt-4o-test1 --mode exec_result --mode exec_result
+
+python get_spider2lite_submission_data.py \
+    --experiment_suffix gpt-4o-test1 \
+    --results_folder_name ../../spider2-lite/evaluation_suite/gemini-2.5-pro-exp-03-25-test1 \
+
+python evaluate.py --result_dir gemini-2.5-pro-exp-03-25-test1 --mode exec_result --mode exec_result
+
 """
