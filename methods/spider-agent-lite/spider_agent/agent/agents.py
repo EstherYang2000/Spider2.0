@@ -52,6 +52,7 @@ class PromptAgent:
         self.env = None
         self.codes = []
         self.work_dir = "/workspace"
+        self.reference_plan = None
         self.use_plan = use_plan
         
     def set_env_and_task(self, env: Spider_Agent_Env):
@@ -97,28 +98,23 @@ class PromptAgent:
             self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = DBT_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
-        
+        logger.info("Reference_plan: %s", self.use_plan)
         # --- Planning and Critique Integration ---
         if self.use_plan:
-            self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=self.reference_plan)
-        else:
             # If no plan is provided, generate one using PlannerAgent and critique using CritiqueAgent
             try:
+                logger.info("Generating plan...")
                 from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
                 planner = PlannerAgent(model=self.model)
-                critique = CritiqueAgent(model=self.model)
                 # Prepare schema string and evidence
                 schema_string = self.env.task_config.get('schema', '')
                 evidence = self.env.task_config.get('evidence', '')
                 # Generate plan
                 plan = planner.generate_plan(self.instruction, schema_string, evidence)
+                logger.info("Generated plan in prompt agent: %s", plan)
                 self.reference_plan = plan
                 self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=plan)
-                # Optionally, generate a critique of an initial SQL (if available)
-                initial_sql = self.env.task_config.get('initial_sql', '')
-                if initial_sql:
-                    critique_msg = critique.critique_sql(initial_sql, plan, self.instruction, schema_string, evidence)
-                    self.system_message += f"\n[CRITIQUE]\n{critique_msg}\n"
+
             except Exception as e:
                 import traceback
                 self.system_message += f"\n[ERROR: Failed to auto-generate plan/critique: {e}\n{traceback.format_exc()}]"

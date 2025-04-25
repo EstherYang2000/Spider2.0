@@ -115,6 +115,7 @@ class SelfRefinementAgent(PromptAgent):
         max_steps=15,
         use_plan=False,
         max_refinement_iterations=5,  # Maximum number of refinement iterations
+        base_top_k=2,                # 新增：RAG檢索案例的預設top_k
     ):
         super().__init__(
             model=model,
@@ -126,13 +127,15 @@ class SelfRefinementAgent(PromptAgent):
             use_plan=use_plan
         )
         self.max_refinement_iterations = max_refinement_iterations
+        self.base_top_k = base_top_k
         self.refinement_iterations = []
         self.consecutive_empty_results = 0
         self.previous_queries = set()
         self.refinement_log_path = "refinement_history.jsonl"  # for self-learning
+        self.refinement_rag = RefinementLogRAG(self.refinement_log_path)
         self.planner_agent = PlannerAgent(model=model)
         self.critique_agent = CritiqueAgent(model=model)
-        self.current_plan = None
+        self.plan_critique = None
 
     def run(self):
         """
@@ -148,25 +151,50 @@ class SelfRefinementAgent(PromptAgent):
         repeat_action = False
         sql_query = None
         critique_msg = None
-        plan_generated = False
-        previous_results = []
 
         # 1. Always generate a plan at the start
-        if not self.current_plan:
+        if not self.reference_plan:
             schema_string = self.env.task_config.get('schema', '')
             evidence = self.env.task_config.get('evidence', '')
             question = self.env.task_config.get('question', '')
-            self.current_plan = self.planner_agent.generate_plan(question, schema_string, evidence)
-            logger.info(f"[MCP] Generated Plan: {self.current_plan}")
+            self.reference_plan = self.planner_agent.generate_plan(question, schema_string, evidence)
+            logger.info(f"[MCP] Generated Plan: {self.reference_plan}") 
+        # Plan critique (only once)
+        self.plan_critique = self.critique_agent.critique_sql(
+            self.reference_plan,  # 直接用 reference_plan 當作 "sql_query" 參數
+            self.reference_plan,  # 也可傳 plan 當作 plan
+            self.env.task_config.get('question', ''),
+            self.env.task_config.get('schema', ''),
+            self.env.task_config.get('evidence', '')
+        )
+        logger.info(f"[MCP] Plan Critique: {self.plan_critique}")
 
         # 2. MCP Loop: SQL generation, critique, refinement
+        def get_plan_step(plan: str, idx: int) -> str:
+            """Extract the idx-th step from a numbered plan string."""
+            import re
+            steps = re.findall(r'\d+\.\s*(.*?)(?=\n\d+\.|$)', plan, re.DOTALL)
+            if not steps:
+                return plan.strip()  # fallback: whole plan if not numbered
+            if idx < len(steps):
+                return steps[idx].strip()
+            else:
+                return steps[-1].strip()  # fallback: last step
+
         while not done and step_idx < self.max_steps:
-            # Generate SQL (or other action) based on the plan and last critique
-            prompt_prefix = f"Plan:\n{self.current_plan}"
+            # On the first step, include the full reference plan; otherwise, only the current step
+            if step_idx == 0:
+                prompt = f"Plan:\n{self.reference_plan}"
+            else:
+                current_plan_step = get_plan_step(self.reference_plan, step_idx)
+                prompt = f"Plan (current step):\n{current_plan_step}"
+            if self.plan_critique:
+                prompt += f"\n\nPlan Critique:\n{self.plan_critique}"
             if critique_msg:
-                prompt_prefix += f"\nPrevious Critique:\n{critique_msg}"
-            # Use PromptAgent's predict with the plan and critique context
-            _, action = self.predict(obs)
+                prompt += f"\n\nPrevious Critique:\n{critique_msg}"
+            prompt += f"\n\nObservation:\n{obs}"
+            # Use PromptAgent's predict with the structured prompt
+            _, action = self.predict(prompt)
 
             if action is None:
                 logger.info("Failed to parse action from response, try again.")
@@ -187,7 +215,7 @@ class SelfRefinementAgent(PromptAgent):
                 schema_string = self.env.task_config.get('schema', '')
                 evidence = self.env.task_config.get('evidence', '')
                 question = self.env.task_config.get('question', '')
-                critique_msg = self.critique_agent.critique_sql(sql_query, self.current_plan, question, schema_string, evidence)
+                critique_msg = self.critique_agent.critique_sql(sql_query, self.reference_plan, question, schema_string, evidence)
                 logger.info(f"[MCP] Critique: {critique_msg}")
 
             if last_action is not None and last_action == action:
@@ -197,7 +225,12 @@ class SelfRefinementAgent(PromptAgent):
                     obs = "The action is the same as the last one, you MUST provide a DIFFERENT SQL code or Python Code or different action."
                     repeat_action = True
             else:
-                obs, done = self.env.step(action)
+                # === 自動啟用 self-refinement ===
+                if hasattr(self, 'self_refinement_enabled') and self.self_refinement_enabled and isinstance(action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)):
+                    action, obs = self.perform_self_refinement(action)
+                    # 這裡假設 self.perform_self_refinement 不會直接終止任務（done 由下方邏輯判斷）
+                else:
+                    obs, done = self.env.step(action)
                 last_action = action
                 repeat_action = False
 
@@ -271,8 +304,9 @@ class SelfRefinementAgent(PromptAgent):
             refinement_iterations += 1
             logger.info(f"Refinement iteration {refinement_iterations}")
             
+
             # Generate refinement prompt
-            refinement_prompt = self._generate_refinement_prompt(sql_query, obs, previous_results)
+            refinement_prompt = self._generate_refinement_prompt(sql_query, obs, previous_results, refinement_iterations)
             
             # Call LLM for refinement
             status, refined_sql = self._call_llm_for_refinement(refinement_prompt)
@@ -493,10 +527,20 @@ class SelfRefinementAgent(PromptAgent):
             sql_query: The current SQL query
             observation: The observation from executing the SQL query
             previous_results: List of previous refinement results
+            refinement_iterations: The number of refinement iterations
             
         Returns:
             A prompt string for the LLM
         """
+        # 動態調整 top_k：可根據 refinement 次數，或直接用 self.base_top_k
+        if refinement_iterations < 2:
+            top_k = self.base_top_k
+        elif refinement_iterations < 5:
+            top_k = max(self.base_top_k, 3)
+        else:
+            top_k = max(self.base_top_k, 6)
+        similar_cases = self.retrieve_similar_refinements(sql_query, top_k=top_k)
+
         prompt = f"""You are an expert SQL developer. I need your help to refine the following SQL query based on the execution results.
 
         Task: {self.env.task_config['question']}
@@ -521,6 +565,12 @@ class SelfRefinementAgent(PromptAgent):
         7. Ensure the output column names match what's expected in the task
         8. For date-based queries, verify the date format and filtering approach
         9. For BigQuery tables with date suffixes, use _TABLE_SUFFIX for filtering when appropriate"""
+        if similar_cases:
+            prompt += "\nRelevant Past Refinements:\n"
+            for case in similar_cases:
+                prompt += f"- Original SQL: {case.get('original_sql','')[:80]}...\n"
+                prompt += f"  Refined SQL: {case.get('refined_sql','')[:80]}...\n"
+                prompt += f"  Error: {case.get('error','')}\n"
         if previous_results and len(previous_results) > 1:
             prompt += "\nPrevious Refinement Attempts:\n"
             for idx, res in enumerate(previous_results[:-1]):

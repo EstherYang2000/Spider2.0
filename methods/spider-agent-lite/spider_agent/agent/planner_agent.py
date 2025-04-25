@@ -16,13 +16,13 @@ class PlannerAgent:
         prompt = (
             f"{prompt_prefix}\n"
             "Task: Generate a step-by-step plan for constructing an accurate SQL query based on the user question, schema, and evidence.\n"
+            "Only output the step-by-step plan. Do NOT generate any SQL or code.\n"
             f"User Question: {question}\n"
             f"Schema: {schema_string}\n"
         )
         if evidence:
             prompt += f"Evidence: {evidence}\n"
         prompt += "Plan:"
-        prompt += "\n\nAfter your reasoning, you must output a valid action in the following format, and nothing else:\nAction: Bash(code=\"...\")\nor\nAction: BIGQUERY_EXEC_SQL(sql_query=\"...\", ...)\n"
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
@@ -30,5 +30,5 @@ class PlannerAgent:
             "temperature": self.temperature,
         }
         logger.info("Calling LLM for plan generation...")
-        response = call_llm(payload)
-        return response["choices"][0]["message"]["content"] if response and "choices" in response else ""
+        _,response = call_llm(payload)
+        return response

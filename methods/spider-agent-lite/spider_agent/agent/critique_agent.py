@@ -33,4 +33,4 @@ class CritiqueAgent:
         }
         logger.info("Calling LLM for critique generation...")
         response = call_llm(payload)
-        return response["choices"][0]["message"]["content"] if response and "choices" in response else ""
+        return response if response else ""

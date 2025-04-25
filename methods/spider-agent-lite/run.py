@@ -63,7 +63,7 @@ def config() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="gpt-4o")
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--max_tokens", type=int, default=1024)
+    parser.add_argument("--max_tokens", type=int, default=6000)
     parser.add_argument("--stop_token", type=str, default=None)
     
     # example config
@@ -238,6 +238,13 @@ def test(
         result_files = env.post_process()
         spider_result = {"finished": done, "steps": len(trajectory["trajectory"]),
                            "result": result_output,"result_files": result_files, **trajectory}
+        # Extract last SQL action as final SQL and store it
+        final_sql = None
+        for step in spider_result.get("trajectory", []):
+            action_str = step.get("action", "")
+            if action_str.startswith("BIGQUERY_EXEC_SQL") or action_str.startswith("SNOWFLAKE_EXEC_SQL") or action_str.startswith("LOCAL_DB_SQL"):
+                final_sql = action_str
+        spider_result["final_sql"] = final_sql
         with open(os.path.join(output_dir, "spider/result.json"), "w") as f:
             json.dump(spider_result, f, indent=2)
             
@@ -265,9 +272,10 @@ if __name__ == '__main__':
 
 """
 python run.py --model mistral-saba-24b -s test1 --example_index 0-1
-python run.py --model gemini-2.5-pro-exp-03-25 -s test1 --example_index 0-10 
-python run.py --model gemini-2.5-pro-exp-03-25 -s test1 --example_index 0-10 
+python run.py --model gemini-2.5-pro-exp-03-25 -s mcp --example_index 0-1
+python run.py --model qwen_api_32b-instruct-fp16 -s mcp --example_index 0-1 
 python run.py --model llamaapi_3.3 -s test1 --example_index 0-1 --self_refinement
-python run.py --model deepSeek-R1 -s test1 --example_index 0-1 --self_refinement
-python run.py --model grok-3-beta -s test1 --example_index 0-1 --self_refinement
+python run.py --model chatgpt-4o-latest -s mcp_rag_log --example_index 0-1 --self_refinement --plan
+python run.py --model grok-3-beta -s rag_log --example_index 4-5 --self_refinement --plan
+python run.py --model grok-3-beta -s base --example_index 1-20
 """
