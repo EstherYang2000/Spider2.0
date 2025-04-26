@@ -2,6 +2,50 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+import os
+import json
+import copy
+import random
+import traceback
+import numpy as np
+from collections import defaultdict, Counter
+from sentence_transformers import SentenceTransformer
+
+def extract_eq_columns_from_where(sql_query: str) -> List[str]:
+    """
+    從 SQL 的 WHERE 子句自動抓取所有等值過濾的欄位名（如 a.xxx = 'yyy'）。
+    支援多個條件、AND/OR、別名。回傳所有欄位名（含 table/alias 前綴）。
+    """
+    # 只抓 WHERE ... 之後到 GROUP BY/ORDER BY/結尾
+    match = re.search(r"where(.+?)(group by|order by|limit|$)", sql_query, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    where_clause = match.group(1)
+    # 找所有 xxx = 'yyy' 或 xxx = N
+    pattern = re.compile(r"([\w\.]+)\s*=\s*('[^']*'|\d+|\?)", re.IGNORECASE)
+    columns = [m.group(1).strip() for m in pattern.finditer(where_clause)]
+    # 去重
+    return list(sorted(set(columns)))
+
+
+def generate_distinct_sqls(sql_query: str, target_columns: List[str]) -> List[Tuple[str, str]]:
+    """
+    根據原始 SQL query 和目標欄位，產生 [(col, distinct_sql)] 列表。
+    每個 distinct_sql 會保留 FROM/JOIN 結構，只查詢該欄位的 distinct 值。
+    """
+    # 抓 FROM ... 之後到 GROUP BY/ORDER BY/結尾
+    match = re.search(r"from(.+?)(group by|order by|limit|$)", sql_query, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    from_clause = match.group(0).strip()
+    # 產生每個欄位的 distinct SQL
+    sqls = []
+    for col in target_columns:
+        dsql = f"SELECT DISTINCT {col} {from_clause} LIMIT 20"
+        sqls.append((col, dsql))
+    return sqls
+
 
 from spider_agent.agent.agents import PromptAgent
 from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
@@ -17,10 +61,35 @@ class RefinementResult:
     result: str
     is_empty: bool = False
     error: bool = False
+    error_type: str = ""
 
-from sentence_transformers import SentenceTransformer
-import numpy as np
-import faiss
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    import faiss
+
+    def _should_probe_column(self, col: str) -> bool:
+        """
+        決定某個欄位是否適合做 distinct probing（過濾 id/time/date 等常見不適合 probing 的欄位）
+        """
+        ignore_keywords = ["id", "time", "date", "created", "updated"]
+        return not any(kw in col.lower() for kw in ignore_keywords)
+
+    def _parse_distinct_values(self, obs: str) -> str:
+        """
+        解析 SQL distinct 結果，回傳值列表字串。
+        假設 obs 是表格格式，第一行是欄位名，後面是值。
+        """
+        lines = obs.strip().splitlines()
+        if len(lines) < 2:
+            return "[no values]"
+        # 過濾掉分隔線與欄位名
+        values = []
+        for line in lines[1:]:
+            if line.strip() and not set(line.strip()) <= set("-+| "):
+                # 只取第一個欄位值
+                cell = line.split("|")[0].strip() if "|" in line else line.strip()
+                values.append(cell)
+        return "[" + ", ".join(values) + "]"
 
 class RefinementLogRAG:
     def __init__(self, log_path="refinement_history.jsonl", model_name="all-MiniLM-L6-v2"):
@@ -83,21 +152,74 @@ class SelfRefinementAgent(PromptAgent):
         return self._refinement_rag.retrieve_similar(sql_query, top_k)
 
     def analyze_sql_error(self, error_msg):
+        """
+        分析 SQL 執行錯誤訊息，回傳更細緻的錯誤型態與建議。
+        會回傳格式：<error_type>: <suggestion>
+        """
         msg = error_msg.lower() if error_msg else ""
-        if "syntax error" in msg or "parse error" in msg:
-            return "Syntax error: Please check the SQL syntax."
-        elif "no such table" in msg or "table not found" in msg:
-            return "Table not found: Please check the table name or database."
-        elif ("column" in msg and "not found" in msg) or ("unknown column" in msg):
-            return "Column not found: Please check the column names in SELECT/FROM/WHERE clauses."
-        elif "permission denied" in msg or "access denied" in msg:
-            return "Permission denied: Please check the database access permissions."
-        elif "timeout" in msg:
-            return "Query timeout: Please optimize the SQL or check the data volume."
-        elif "division by zero" in msg:
-            return "Division by zero error: Please check the calculation expressions."
-        else:
-            return "Other error: Please review the message and fix accordingly."
+
+        # Syntax / Parse
+        if any(x in msg for x in ["syntax error", "parse error", "parsererror", "unexpected", "expected"]):
+            return "SyntaxError: Please check the SQL syntax, parentheses, commas, single quotes,double quotes, and reserved words."
+
+        # Table not found / does not exist
+        if any(x in msg for x in ["no such table", "table not found", "does not exist", "unknown table", "relation does not exist"]):
+            return "TableNotFound: Please check the table name, schema, or database."
+
+        # Column not found / does not exist
+        if any(x in msg for x in ["no such column", "column not found", "unknown column", "does not exist in", "unrecognized name", "ambiguous column", "invalid column"]):
+            return "ColumnNotFound: Please check the column names in SELECT/FROM/WHERE clauses, and ensure all columns exist."
+
+        # Ambiguous column
+        if "ambiguous column" in msg or "is ambiguous" in msg:
+            return "AmbiguousColumn: Column name is ambiguous, please add table or alias prefix."
+
+        # Function not found
+        if any(x in msg for x in ["function not found", "no such function", "unknown function", "not a function"]):
+            return "FunctionNotFound: Please check the function name and arguments."
+
+        # Invalid data type
+        if any(x in msg for x in ["invalid input syntax", "invalid type", "type mismatch", "cannot cast", "datatype mismatch"]):
+            return "TypeError: Please check the data types of columns and literals."
+
+        # Permission
+        if any(x in msg for x in ["permission denied", "access denied", "not authorized", "insufficient privileges"]):
+            return "PermissionDenied: Please check the database access permissions."
+
+        # Timeout
+        if "timeout" in msg or "timed out" in msg or "query exceeded" in msg:
+            return "Timeout: Query execution exceeded time limit, please optimize the SQL or check the data volume."
+
+        # Division by zero
+        if "division by zero" in msg:
+            return "DivisionByZero: Please check the calculation expressions and avoid dividing by zero."
+
+        # Duplicate column
+        if "duplicate column" in msg or "column name specified more than once" in msg:
+            return "DuplicateColumn: Please ensure all output columns have unique names."
+
+        # Invalid identifier
+        if "invalid identifier" in msg or "invalid name" in msg:
+            return "InvalidIdentifier: Please check table/column/alias names for typos or reserved words."
+
+        # Resource exceeded (BigQuery/Cloud)
+        if "resources exceeded" in msg or "quota exceeded" in msg:
+            return "ResourceExceeded: Query exceeded resource or quota limits, try to simplify the query."
+
+        # Not null constraint
+        if "null value in column" in msg or "not null constraint" in msg:
+            return "NotNullConstraint: Column does not allow NULL values, please check your data or query."
+
+        # Foreign key / constraint error
+        if "foreign key constraint" in msg or "constraint failed" in msg:
+            return "ConstraintError: Check foreign key or other constraints in your query."
+
+        # No result
+        if "no rows" in msg or "empty result" in msg or "no results" in msg:
+            return "NoResult: The query returned no data, please check your filtering conditions."
+
+        # Default fallback
+        return "OtherError: Please review the error message and fix accordingly."
 
     """
     Extension of PromptAgent with self-refinement capabilities.
@@ -116,6 +238,8 @@ class SelfRefinementAgent(PromptAgent):
         use_plan=False,
         max_refinement_iterations=5,  # Maximum number of refinement iterations
         base_top_k=2,                # 新增：RAG檢索案例的預設top_k
+        rag_syntax=False,            # 新增：是否啟用 BigQuery syntax RAG
+        self_refinement_enabled=True  # 新增：是否啟用自我修正
     ):
         super().__init__(
             model=model,
@@ -126,6 +250,7 @@ class SelfRefinementAgent(PromptAgent):
             max_steps=max_steps,
             use_plan=use_plan
         )
+        self.rag_syntax = rag_syntax
         self.max_refinement_iterations = max_refinement_iterations
         self.base_top_k = base_top_k
         self.refinement_iterations = []
@@ -136,6 +261,7 @@ class SelfRefinementAgent(PromptAgent):
         self.planner_agent = PlannerAgent(model=model)
         self.critique_agent = CritiqueAgent(model=model)
         self.plan_critique = None
+        self.self_refinement_enabled = self_refinement_enabled  # 新增：自我修正开关
 
     def run(self):
         """
@@ -169,6 +295,49 @@ class SelfRefinementAgent(PromptAgent):
         )
         logger.info(f"[MCP] Plan Critique: {self.plan_critique}")
 
+        # ====== 主動詢問 LLM 需要哪些 BigQuery syntax 補充 ======
+        syntax_reference = ""
+        if self.rag_syntax and self.env.task_config.get('instance_id', '').startswith('bq'):
+            from spider_agent.agent.rag_syntax_agent import RAGSyntaxAgent
+            question = self.env.task_config.get('question', '')
+            schema = self.env.task_config.get('schema', '')
+            plan = self.reference_plan
+            critique = self.plan_critique
+            syntax_query_prompt = (
+                f"User Question: {question}\n"
+                f"Schema: {schema}\n"
+                f"Plan: {plan}\n"
+                f"Critique: {critique}\n"
+                f"{RAGSyntaxAgent.get_syntax_request_prompt()}"
+            )
+            syntax_response = call_llm({
+                "model": self.model,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": syntax_query_prompt}]}],
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            })
+            logger.info(f"Syntax Response: {syntax_response}")
+            def parse_syntax_needs(llm_response):
+                if not llm_response or "none" in llm_response.lower():
+                    return []
+                return [item.strip() for item in llm_response.split(",") if item.strip()]
+            # 解包 call_llm 回傳 tuple
+            if isinstance(syntax_response, tuple):
+                syntax_success, syntax_content = syntax_response
+            else:
+                syntax_success, syntax_content = True, syntax_response
+            if not syntax_success or not syntax_content or syntax_content == "None":
+                syntax_topics = []
+            else:
+                syntax_topics = parse_syntax_needs(syntax_content)
+            syntax_reference = ""
+            if syntax_topics:
+                rag_syntax_agent = RAGSyntaxAgent()
+                syntax_results = rag_syntax_agent.retrieve(syntax_topics)
+                syntax_reference = rag_syntax_agent.format_for_prompt(syntax_results)
+                logger.info(f"Syntax Reference: {syntax_reference}")
+        # ======================================================
+
         # 2. MCP Loop: SQL generation, critique, refinement
         def get_plan_step(plan: str, idx: int) -> str:
             """Extract the idx-th step from a numbered plan string."""
@@ -188,10 +357,14 @@ class SelfRefinementAgent(PromptAgent):
             else:
                 current_plan_step = get_plan_step(self.reference_plan, step_idx)
                 prompt = f"Plan (current step):\n{current_plan_step}"
+
             if self.plan_critique:
                 prompt += f"\n\nPlan Critique:\n{self.plan_critique}"
             if critique_msg:
                 prompt += f"\n\nPrevious Critique:\n{critique_msg}"
+            # 融入 syntax_reference
+            if syntax_reference and self.env.task_config.get('instance_id', '').startswith('bq') and syntax_reference:
+                prompt += f"\n\n{syntax_reference}"
             prompt += f"\n\nObservation:\n{obs}"
             # Use PromptAgent's predict with the structured prompt
             _, action = self.predict(prompt)
@@ -225,12 +398,8 @@ class SelfRefinementAgent(PromptAgent):
                     obs = "The action is the same as the last one, you MUST provide a DIFFERENT SQL code or Python Code or different action."
                     repeat_action = True
             else:
-                # === 自動啟用 self-refinement ===
-                if hasattr(self, 'self_refinement_enabled') and self.self_refinement_enabled and isinstance(action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)):
-                    action, obs = self.perform_self_refinement(action)
-                    # 這裡假設 self.perform_self_refinement 不會直接終止任務（done 由下方邏輯判斷）
-                else:
-                    obs, done = self.env.step(action)
+                # === 擴大 obs 錯誤關鍵字判斷，自動啟用 self-refinement ===
+                obs, done = self.env.step(action)
                 last_action = action
                 repeat_action = False
 
@@ -283,6 +452,7 @@ class SelfRefinementAgent(PromptAgent):
         refinement_iterations = 0
         previous_results = []
         self.consecutive_empty_results = 0
+        self.consecutive_error_count = 0  # 每次進入 refinement 都歸零
         
         # Add the initial query to previous queries
         self.previous_queries.add(sql_query)
@@ -307,9 +477,11 @@ class SelfRefinementAgent(PromptAgent):
 
             # Generate refinement prompt
             refinement_prompt = self._generate_refinement_prompt(sql_query, obs, previous_results, refinement_iterations)
-            
+            logger.info(f"Refinement prompt: {refinement_prompt}")
             # Call LLM for refinement
             status, refined_sql = self._call_llm_for_refinement(refinement_prompt)
+            logger.info(f"Refinement status: {status}")
+            logger.info(f"Refined SQL: {refined_sql}")
             
             if not status:
                 logger.error(f"Failed to call LLM for refinement: {refined_sql}")
@@ -319,8 +491,21 @@ class SelfRefinementAgent(PromptAgent):
             refined_sql = self._extract_sql_from_response(refined_sql)
             
             if not refined_sql or refined_sql in self.previous_queries:
-                logger.info("Refined SQL is empty or duplicate, skipping")
+                logger.info("Refined SQL is empty or duplicate, recording as failed iteration")
+                self.refinement_iterations.append({
+                    "iteration": refinement_iterations,
+                    "sql_query": refined_sql if refined_sql else "",
+                    "result": "Empty or duplicate SQL, refinement skipped.",
+                    "is_empty": False,
+                    "error": True,
+                    "skipped": True
+                })
                 continue
+            
+            # Check for repeated SQL to avoid infinite loops
+            if refined_sql.strip() in [r.sql_query.strip() for r in previous_results]:
+                logger.warning("Refined SQL is the same as a previous attempt, terminating refinement to avoid infinite loop.")
+                break
             
             # Add to previous queries
             self.previous_queries.add(refined_sql)
@@ -407,21 +592,29 @@ class SelfRefinementAgent(PromptAgent):
     def _parse_sql_result(self, observation: str, sql_query: str) -> RefinementResult:
         """
         Parse the SQL execution result from the observation.
-        
+
         Args:
             observation: The observation from executing the SQL query
             sql_query: The SQL query that was executed
-            
+
         Returns:
             RefinementResult object containing the parsed result
         """
         result = RefinementResult(sql_query=sql_query, result=observation)
-        
-        # Check for errors
-        if "error" in observation.lower() or "exception" in observation.lower():
-            result.error = True
+
+        # 強化錯誤訊息捕捉
+        error_keywords = [
+            "syntax error", "exception", "traceback", "invalid", "error", "failed", "not found", "no such"
+        ]
+        for kw in error_keywords:
+            if kw in observation.lower():
+                result.error = True
+                break
+        if result.error:
+            # 自動分析錯誤型態
+            result.error_type = self.analyze_sql_error(observation)
             return result
-        
+
         # Check for empty results
         empty_patterns = [
             r"0 rows? affected",
@@ -430,7 +623,7 @@ class SelfRefinementAgent(PromptAgent):
             r"no results?",
             r"returned 0 rows?"
         ]
-        
+
         for pattern in empty_patterns:
             if re.search(pattern, observation.lower()):
                 result.is_empty = True
@@ -439,7 +632,7 @@ class SelfRefinementAgent(PromptAgent):
         else:
             # Reset consecutive empty results if this result is not empty
             self.consecutive_empty_results = 0
-        
+
         return result
     
     def _should_terminate_refinement(self, current_result: RefinementResult, previous_results: List[RefinementResult]) -> bool:
@@ -471,7 +664,12 @@ class SelfRefinementAgent(PromptAgent):
                     not current_result.error and not current_result.is_empty and
                     self._results_are_equivalent(prev_result.result, current_result.result)):
                     # Only terminate if the result is not 0
-                    if "0" not in current_result.result.split("\n")[1]:
+                    lines = current_result.result.split("\n")
+                    if len(lines) > 1:
+                        target_line = lines[1]
+                    else:
+                        target_line = lines[0] if lines else ""
+                    if "0" not in target_line:
                         logger.info("Self-consistency achieved: same result obtained twice")
                         return True
                     else:
@@ -516,10 +714,98 @@ class SelfRefinementAgent(PromptAgent):
         # fallback: string similarity
         similarity = SequenceMatcher(None, result1.strip(), result2.strip()).ratio()
         return similarity > 0.95
+    def _extract_all_columns_from_schema(self, schema):
+        """
+        Extract all column names from schema string or dict.
+        """
+        # If schema is a dict: {table: [(col, type), ...]}
+        if isinstance(schema, dict):
+            columns = set()
+            for table, cols in schema.items():
+                for col, _ in cols:
+                    columns.add(col)
+            return sorted(list(columns))
+        # If schema is a string: parse lines like 'table.column type'
+        columns = set()
+        import re
+        for line in str(schema).splitlines():
+            m = re.match(r"([\w\.]+)\s+(\w+)", line.strip())
+            if m:
+                col = m.group(1)
+                columns.add(col)
+        return sorted(list(columns))
 
-    # Only one _should_terminate_refinement method should exist. Remove duplicate/conflicting definitions.
+    def _extract_all_tables_from_schema(self, schema):
+        """
+        Extract all table names from schema string or dict.
+        """
+        if isinstance(schema, dict):
+            return sorted(list(schema.keys()))
+        tables = set()
+        import re
+        for line in str(schema).splitlines():
+            m = re.match(r"([\w]+)\.([\w]+)\s+(\w+)", line.strip())
+            if m:
+                tables.add(m.group(1))
+        return sorted(list(tables))
 
-    def _generate_refinement_prompt(self, sql_query: str, observation: str, previous_results: List[RefinementResult]) -> str:
+    def _extract_all_columns_types_from_schema(self, schema):
+        """
+        Extract column:type mapping from schema string or dict.
+        """
+        result = {}
+        if isinstance(schema, dict):
+            for table, cols in schema.items():
+                for col, typ in cols:
+                    result[col] = typ
+            return result
+        import re
+        for line in str(schema).splitlines():
+            m = re.match(r"([\w\.]+)\s+(\w+)", line.strip())
+            if m:
+                result[m.group(1)] = m.group(2)
+        return result
+    def _should_probe_column(self, col):
+        """
+        決定某欄位是否適合 probing。優先只允許 string/text 型欄位。
+        """
+        # 嘗試根據 schema 型態過濾
+        schema = self.env.task_config.get('schema', None)
+        if schema is not None:
+            # 取得所有欄位型態
+            col_types = self._extract_all_columns_types_from_schema(schema)
+            col_type = col_types.get(col)
+            # 常見 string 型態判斷
+            if col_type is not None:
+                if col_type.lower() in ['string', 'text', 'varchar', 'char']:
+                    return True
+                else:
+                    return False
+            # 若無 schema/type，預設允許所有欄位
+        return True
+
+    def _parse_distinct_values(self, obs):
+        """
+        解析 BigQuery 查詢結果，回傳 distinct value list 字串。
+        """
+        # 假設 obs 是 list of dict 或 str，根據實際格式調整
+        if isinstance(obs, list):
+            vals = []
+            for row in obs:
+                if isinstance(row, dict):
+                    vals.extend([str(v) for v in row.values()])
+                else:
+                    vals.append(str(row))
+            return ', '.join(vals)
+        elif isinstance(obs, str):
+            # 嘗試從字串中提取 value
+            import re
+            vals = re.findall(r"'([^']+)'", obs)
+            if vals:
+                return ', '.join(vals)
+            return obs
+        return str(obs)
+    def _generate_refinement_prompt(self, sql_query: str, observation: str, previous_results: List[RefinementResult], refinement_iterations: int) -> str:
         """
         Generate a prompt for the LLM to refine the SQL query.
         
@@ -541,30 +827,147 @@ class SelfRefinementAgent(PromptAgent):
             top_k = max(self.base_top_k, 6)
         similar_cases = self.retrieve_similar_refinements(sql_query, top_k=top_k)
 
-        prompt = f"""You are an expert SQL developer. I need your help to refine the following SQL query based on the execution results.
+        # 判斷 error 或 no data 狀態
+        error = False
+        no_data = False
+        if previous_results:
+            last_result = previous_results[-1]
+            error = getattr(last_result, "error", False)
+            no_data = getattr(last_result, "is_empty", False)
+        
+        prompt = f"You are an expert SQL developer. I need your help to refine the following SQL query based on the execution results.\n\n"
+        prompt += f"Task: {self.env.task_config['question']}\n\n"
+        prompt += f"Current SQL Query:\n```sql\n{sql_query}\n```\n\n"
+        prompt += f"Execution Result:\n```\n{observation}\n```\n\n"
 
-        Task: {self.env.task_config['question']}
+        # 根據 error/no_data 狀態插入不同指示語
+        if error:
+            # 插入 error_type
+            error_type = getattr(last_result, "error_type", "") if previous_results else ""
+            if error_type:
+                prompt += f"\nError Type: {error_type}\n"
+            prompt += (
+                "The SQL execution returned an ERROR. You MUST carefully read the error message and propose a concrete fix to the SQL."
+                " Do not simply rephrase the query—identify and directly address the root cause of the error, such as syntax mistakes, missing or misspelled columns/tables, type mismatches, or logic errors."
+                " Your refinement MUST demonstrate a substantial correction that resolves the specific error."
+                " In your critique, explicitly state what was wrong and how your fix addresses it."
+            )
+        elif no_data:
+            prompt += (
+                "The SQL executed successfully but returned NO DATA. Please check if the filtering conditions are too strict, if the target value exists in the data, or if there are any logic errors that may cause empty results."
+                " Try to debug by querying the distinct values of key columns to identify potential mismatches."
+                " Your refinement should adjust filters or logic to retrieve relevant data, and your critique must explain your reasoning."
+            )
+            # ====== 智能 distinct value probing（結構化 & 避免重複） ======
+            if not hasattr(self, '_probed_columns'):
+                self._probed_columns = set()
+            target_columns = [col for col in extract_eq_columns_from_where(sql_query) if self._should_probe_column(col)]
+            probing_results = []
+            for col in target_columns:
+                if col in self._probed_columns:
+                    continue
+                dsql = f"SELECT DISTINCT {col} FROM (" + sql_query + ") AS sub LIMIT 20"
+                try:
+                    action = self._make_sql_action(dsql) if hasattr(self, '_make_sql_action') else dsql
+                    obs, _ = self.env.step(action)
+                    values = self._parse_distinct_values(obs)
+                    probing_results.append(f"{col}: {values}")
+                    self._probed_columns.add(col)
+                except Exception as e:
+                    probing_results.append(f"{col}: [distinct probing error: {e}]")
+            if probing_results:
+                # 美化 probing 結果為 markdown table
+                prompt += "\nBelow are the possible values for key columns (based on current data). Please use these values to adjust your SQL if needed.\n"
+                prompt += "\n| Column | Distinct Values |\n|--------|----------------|\n"
+                for pr in probing_results:
+                    if ":" in pr:
+                        col, vals = pr.split(":", 1)
+                        prompt += f"| `{col.strip()}` | {vals.strip()} |\n"
+                prompt += "\n"
 
-        Current SQL Query:
-        ```sql
-        {sql_query}
-        ```
+        # 錯誤型態導向自動 probing
+        error_type = getattr(last_result, "error_type", "") if previous_results else ""
+        # 1. SyntaxError/NoResult: 自動 probing 目標欄位
+        if error_type and (error_type.startswith("SyntaxError") or error_type.startswith("NoResult")):
+            # 自動 distinct probing
+            if not hasattr(self, '_probed_columns'):
+                self._probed_columns = set()
+            target_columns = [col for col in extract_eq_columns_from_where(sql_query) if self._should_probe_column(col)]
+            probing_results = []
+            for col in target_columns:
+                if col in self._probed_columns:
+                    continue
+                dsql = f"SELECT DISTINCT {col} FROM (" + sql_query + ") AS sub LIMIT 20"
+                try:
+                    action = self._make_sql_action(dsql) if hasattr(self, '_make_sql_action') else dsql
+                    obs, _ = self.env.step(action)
+                    values = self._parse_distinct_values(obs)
+                    probing_results.append(f"{col}: {values}")
+                    self._probed_columns.add(col)
+                except Exception as e:
+                    probing_results.append(f"{col}: [distinct probing error: {e}]")
+            if probing_results:
+                prompt += "\nBelow are the possible values for key columns (based on current data). Please use these values to adjust your SQL if needed.\n"
+                prompt += "\n| Column | Distinct Values |\n|--------|----------------|\n"
+                for pr in probing_results:
+                    if ":" in pr:
+                        col, vals = pr.split(":", 1)
+                        prompt += f"| `{col.strip()}` | {vals.strip()} |\n"
+                prompt += "\n"
 
-        Execution Result:
-        ```
-        {observation}
-        ```
 
-        SQL Refinement Guidelines:
-        1. Carefully analyze the error messages or empty results
-        2. Check for syntax errors, incorrect table names, or missing joins
-        3. Ensure column names are correct and properly referenced
-        4. Verify that filtering conditions are appropriate for the task
-        5. Consider using Common Table Expressions (CTEs) to break down complex logic
-        6. Make sure aggregation functions are used correctly
-        7. Ensure the output column names match what's expected in the task
-        8. For date-based queries, verify the date format and filtering approach
-        9. For BigQuery tables with date suffixes, use _TABLE_SUFFIX for filtering when appropriate"""
+
+        # 2. 其他 error_type 對應 schema probing
+        if error_type:
+            if error_type.startswith("ColumnNotFound"):
+                schema = self.env.task_config.get('schema', '')
+                all_columns = self._extract_all_columns_from_schema(schema)
+                if all_columns:
+                    prompt += "\nThe following are all valid columns in the database. Please ensure your SQL only uses these columns.\n"
+                    prompt += ", ".join(f'`{c}`' for c in all_columns) + "\n"
+            elif error_type.startswith("TableNotFound"):
+                schema = self.env.task_config.get('schema', '')
+                all_tables = self._extract_all_tables_from_schema(schema)
+                if all_tables:
+                    prompt += "\nThe following are all valid tables in the database. Please ensure your SQL only uses these tables.\n"
+                    prompt += ", ".join(f'`{t}`' for t in all_tables) + "\n"
+            elif error_type.startswith("TypeError"):
+                schema = self.env.task_config.get('schema', '')
+                all_columns_types = self._extract_all_columns_types_from_schema(schema)
+                if all_columns_types:
+                    prompt += "\nColumn types for reference (please match types in your SQL):\n"
+                    prompt += "\n| Column | Type |\n|--------|------|\n"
+                    for col, typ in all_columns_types.items():
+                        prompt += f"| `{col}` | {typ} |\n"
+                    prompt += "\n"
+
+        # 3. 若 SQL 字串 literal 含單引號，提醒 LLM 用雙引號/三重引號包覆
+        import re
+        string_literals = re.findall(r"'(.*?)'", sql_query)
+        if any("'" in val for val in string_literals):
+            prompt += ("\n[Notice] Your SQL string literal contains apostrophes ('). "
+                       "In BigQuery, use two single quotes ('') to escape an apostrophe inside a string. "
+                       "If you are passing SQL as a string in Python or another language, consider using double quotes (\"...\") or triple quotes (\"\"\"...\"\"\") to wrap the SQL, and avoid mixing escape styles.\n")
+        else:
+            prompt += (
+                "Please analyze the result and refine the SQL if necessary to better match the user intent."
+                " Your critique must be actionable and specific—do not just restate the result, but explain what you changed and why."
+            )
+
+        prompt += (
+            "\nSQL Refinement Guidelines:\n"
+            "1. You MUST directly address and fix any error messages."
+            "2. Critique should include actionable, specific suggestions for resolving the error or improving the query."
+            "3. Carefully analyze the error messages or empty results."
+            "4. Check for syntax errors, incorrect table names, or missing joins."
+            "5. Ensure column names are correct and properly referenced."
+            "6. Verify that filtering conditions are appropriate for the task."
+            "7. Consider using Common Table Expressions (CTEs) to break down complex logic."
+            "8. Make sure aggregation functions are used correctly."
+            "9. Ensure the output column names match what's expected in the task."
+            "10. For date-based queries, verify the date format and filtering approach."
+            "11. For BigQuery tables with date suffixes, use _TABLE_SUFFIX for filtering when appropriate."
+        )
         if similar_cases:
             prompt += "\nRelevant Past Refinements:\n"
             for case in similar_cases:
@@ -574,12 +977,35 @@ class SelfRefinementAgent(PromptAgent):
         if previous_results and len(previous_results) > 1:
             prompt += "\nPrevious Refinement Attempts:\n"
             for idx, res in enumerate(previous_results[:-1]):
-                prompt += f"- Iteration {idx+1}: SQL: {res.sql_query[:120]}... | Result: {res.result[:120]}...\n"
+                prompt += f"- Iteration {idx+1}: SQL: {res.sql_query}\n  | Result: {res.result}\n"
+                prompt += f"  Error: {res.error}\n"
         else:
             prompt += "\nNo previous refinement results.\n"
         
-        prompt += "\nPlease provide a refined SQL query that addresses the issues. Return ONLY the SQL query without any explanations or markdown formatting.\n"
+        prompt += (
+            "\nIMPORTANT: Do NOT repeat any of the previous SQL queries listed above. "
+            "If you encounter the same error as before, you MUST try a different approach or significantly modify the SQL structure. "
+            "If you cannot fix the issue, clearly state the reason.\n"
+            "Please provide a refined SQL query that addresses the issues. Return ONLY the SQL query without any explanations or markdown formatting.\n"
+        )
         return prompt
+
+    def _make_sql_action(self, sql: str):
+        """
+        Helper: 將 SQL 字串包裝成對應的 action。
+        根據 self.action_type 屬性自動判斷 BigQuery、Snowflake、Local DB。
+        """
+        from spider_agent.agent.action import BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL
+        action_type = getattr(self, 'action_type', None)
+        if action_type is None and hasattr(self, 'env') and hasattr(self.env, 'action_type'):
+            action_type = getattr(self.env, 'action_type', None)
+        # 預設 BigQuery
+        if action_type == 'SNOWFLAKE_EXEC_SQL':
+            return SNOWFLAKE_EXEC_SQL(sql_query=sql, is_save=False, save_path=None)
+        elif action_type == 'LOCAL_DB_SQL':
+            return LOCAL_DB_SQL(sql_query=sql, is_save=False, save_path=None)
+        else:
+            return BIGQUERY_EXEC_SQL(sql_query=sql, is_save=False, save_path=None)
 
     def _call_llm_for_refinement(self, prompt: str) -> Tuple[bool, str]:
         """
