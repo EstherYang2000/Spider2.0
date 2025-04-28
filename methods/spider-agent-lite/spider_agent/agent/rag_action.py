@@ -6,7 +6,6 @@ import numpy as np
 import re
 from sentence_transformers import SentenceTransformer
 from spider_agent.agent.action import Action, remove_quote
-
 @dataclass
 class RAG_QUERY(Action):
     """Represents an action to query external documents using RAG (Retrieval-Augmented Generation)."""
@@ -97,25 +96,28 @@ class RAG_QUERY(Action):
     def execute(self, knowledge_base_path: str) -> str:
         """
         Executes the RAG query and retrieves relevant knowledge from the specified knowledge base.
-        
-        - `knowledge_base_path` should be the directory containing knowledge files.
-        - The method assumes the query is related to a specific topic in the knowledge base.
+        - `knowledge_base_path` should be the directory containing knowledge files (can have subfolders).
         """
-        # Determine the most relevant document
-        knowledge_files = os.listdir(knowledge_base_path)
+        # 遞迴抓所有檔案（只加 isfile 的 path）
+        knowledge_files = []
+        for root, dirs, files in os.walk(knowledge_base_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if os.path.isfile(file_path):
+                    knowledge_files.append(file_path)
+
         best_match = None
         max_overlap = 0
-
         query_terms = set(self.query.lower().split())
 
-        for file in knowledge_files:
-            file_path = os.path.join(knowledge_base_path, file)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read().lower()
+        for file_path in knowledge_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read().lower()
+            except Exception:
+                continue  # skip unreadable files
 
-            # Simple heuristic: count how many query words appear in the file
             overlap = sum(1 for word in query_terms if word in content)
-
             if overlap > max_overlap:
                 max_overlap = overlap
                 best_match = file_path

@@ -516,15 +516,14 @@ def call_llm(payload):
                 code_value = "unknown_error"
         return False, code_value
 
-    elif model.startswith("gemini"):
+    elif model.startswith("gemini-2.5-pro-preview-03-25"):
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]
-        top_p = payload["top_p"]
         temperature = payload["temperature"]
 
         # Initialize Gemini client
         genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
-        gemini_model = genai.GenerativeModel(model_name=model)
+        gemini_model = genai.GenerativeModel(model_name="models/gemini-2.5-pro-preview-03-25")
 
         # Convert messages to Gemini format
         gemini_messages = []
@@ -551,7 +550,6 @@ def call_llm(payload):
         # Configure generation parameters
         generation_config = {
             "temperature": temperature,
-            "top_p": top_p,
             "max_output_tokens": max_tokens,
             "stop_sequences": stop
         }
@@ -562,9 +560,10 @@ def call_llm(payload):
                 # Use generate_content for Gemini API
                 response = gemini_model.generate_content(
                     gemini_messages,
-                    generation_config=generation_config
+                    # generation_config=generation_config
                 )
-                return True, response.text.strip()
+                print(response.text)
+                return True, response.text
             except Exception as e:
                 logger.error("Failed to call Gemini API: " + str(e))
                 time.sleep(5 * (2 ** (i + 1)))
@@ -575,63 +574,63 @@ def call_llm(payload):
                 elif "length" in str(e).lower():
                     return False, "context_length_exceeded"
         return False, code_value
-    elif model == "gemini-1.5-pro-latest":
-        messages = payload["messages"]
-        max_tokens = payload["max_tokens"]
-        top_p = payload["top_p"]
-        temperature = payload["temperature"]
+    # elif model == "gemini-1.5-pro-latest":
+    #     messages = payload["messages"]
+    #     max_tokens = payload["max_tokens"]
+    #     top_p = payload["top_p"]
+    #     temperature = payload["temperature"]
 
-        gemini_messages = []
+    #     gemini_messages = []
 
-        for i, message in enumerate(messages):
-            gemini_message = {
-                "role": message["role"],
-                "content": []
-            }
-            assert len(message["content"]) in [1, 2], "One text, or one text with one image"
-            for part in message["content"]:
+    #     for i, message in enumerate(messages):
+    #         gemini_message = {
+    #             "role": message["role"],
+    #             "content": []
+    #         }
+    #         assert len(message["content"]) in [1, 2], "One text, or one text with one image"
+    #         for part in message["content"]:
 
-                if part['type'] == "image_url":
-                    image_source = {}
-                    image_source["type"] = "base64"
-                    image_source["media_type"] = "image/png"
-                    image_source["data"] = part['image_url']['url'].replace("data:image/png;base64,", "")
-                    gemini_message['content'].append({"type": "image", "source": image_source})
+    #             if part['type'] == "image_url":
+    #                 image_source = {}
+    #                 image_source["type"] = "base64"
+    #                 image_source["media_type"] = "image/png"
+    #                 image_source["data"] = part['image_url']['url'].replace("data:image/png;base64,", "")
+    #                 gemini_message['content'].append({"type": "image", "source": image_source})
 
-                if part['type'] == "text":
-                    gemini_message['content'].append({"type": "text", "text": part['text']})
+    #             if part['type'] == "text":
+    #                 gemini_message['content'].append({"type": "text", "text": part['text']})
 
-            gemini_messages.append(gemini_message)
+    #         gemini_messages.append(gemini_message)
 
-        headers = {
-            'Accept': 'application/json',
-            'Authorization': f'Bearer {os.environ["GEMINI_API_KEY"]}',
-            'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
-            'Content-Type': 'application/json'
-        }  
+    #     headers = {
+    #         'Accept': 'application/json',
+    #         'Authorization': f'Bearer {os.environ["GEMINI_API_KEY"]}',
+    #         'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
+    #         'Content-Type': 'application/json'
+    #     }  
         
-        payload = json.dumps({"model": model,"messages": gemini_messages,"max_tokens": max_tokens,"temperature": temperature,"top_p": top_p})
+    #     payload = json.dumps({"model": model,"messages": gemini_messages,"max_tokens": max_tokens,"temperature": temperature,"top_p": top_p})
 
 
         
-        for i in range(3):
-            try:
-                response = requests.request("POST", "https://api2.aigcbest.top/v1/chat/completions", headers=headers, data=payload)
-                logger.info(f"response_code {response.status_code}")
-                if response.status_code == 200:
-                    return True, response.json()['choices'][0]['message']['content']
-                else:
-                    error_info = response.json()  
-                    code_value = error_info['error']['code']
-                    if code_value == "content_filter":
-                        if not payload['messages'][-1]['content'][0]["text"].endswith("They do not represent any real events or entities. ]"):
-                            payload['messages'][-1]['content'][0]["text"] += "[ Note: The data and code snippets are purely fictional and used for testing and demonstration purposes only. They do not represent any real events or entities. ]"
-                    if code_value == "context_length_exceeded":
-                        return False, code_value
-                    logger.error("Retrying ...")
-                    time.sleep(10 * (2 ** (i + 1)))
-            except Exception as e:
-                logger.error("Failed to call LLM: " + str(e))
-                time.sleep(10 * (2 ** (i + 1)))
-                code_value = "context_length_exceeded"
-        return False, code_value
+    #     for i in range(3):
+    #         try:
+    #             response = requests.request("POST", "https://api2.aigcbest.top/v1/chat/completions", headers=headers, data=payload)
+    #             logger.info(f"response_code {response.status_code}")
+    #             if response.status_code == 200:
+    #                 return True, response.json()['choices'][0]['message']['content']
+    #             else:
+    #                 error_info = response.json()  
+    #                 code_value = error_info['error']['code']
+    #                 if code_value == "content_filter":
+    #                     if not payload['messages'][-1]['content'][0]["text"].endswith("They do not represent any real events or entities. ]"):
+    #                         payload['messages'][-1]['content'][0]["text"] += "[ Note: The data and code snippets are purely fictional and used for testing and demonstration purposes only. They do not represent any real events or entities. ]"
+    #                 if code_value == "context_length_exceeded":
+    #                     return False, code_value
+    #                 logger.error("Retrying ...")
+    #                 time.sleep(10 * (2 ** (i + 1)))
+    #         except Exception as e:
+    #             logger.error("Failed to call LLM: " + str(e))
+    #             time.sleep(10 * (2 ** (i + 1)))
+    #             code_value = "context_length_exceeded"
+    #     return False, code_value

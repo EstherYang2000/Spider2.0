@@ -61,7 +61,7 @@ def config() -> argparse.Namespace:
     parser.add_argument("--suffix", '-s', type=str, default="gpt-4-try1")
     
     parser.add_argument("--model", type=str, default="gpt-4o")
-    parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--temperature", type=float, default=0.3)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=6000)
     parser.add_argument("--stop_token", type=str, default=None)
@@ -84,7 +84,7 @@ def config() -> argparse.Namespace:
     # Self-refinement related
     parser.add_argument("--self_refinement", action="store_true", help="Enable self-refinement for SQL queries")
     parser.add_argument("--max_refinement_iterations", type=int, default=5, help="Maximum number of refinement iterations")
-    
+    parser.add_argument("--rag_syntax", action="store_true", help="Enable RAG syntax for self-refinement")
     
     args = parser.parse_args()
 
@@ -132,7 +132,8 @@ def test(
             max_memory_length=args.max_memory_length,
             max_steps=args.max_steps,
             use_plan=args.plan,
-            max_refinement_iterations=args.max_refinement_iterations
+            max_refinement_iterations=args.max_refinement_iterations,
+            rag_syntax=args.rag_syntax
         )
     else:
         agent = PromptAgent(
@@ -142,7 +143,8 @@ def test(
             temperature=args.temperature,
             max_memory_length=args.max_memory_length,
             max_steps=args.max_steps,
-            use_plan=args.plan
+            use_plan=args.plan,
+            rag_syntax=args.rag_syntax
         )
     valid_ids = []
     ## load task configs
@@ -272,10 +274,11 @@ if __name__ == '__main__':
 
 """
 python run.py --model mistral-saba-24b -s test1 --example_index 0-1
-python run.py --model gemini-2.5-pro-exp-03-25 -s mcp --example_index 0-1
+python run.py --model gemini-2.5-pro-preview-03-25 -s mcp --example_index 0-1
 python run.py --model qwen_api_32b-instruct-fp16 -s mcp --example_index 0-1 
 python run.py --model llamaapi_3.3 -s test1 --example_index 0-1 --self_refinement
 python run.py --model chatgpt-4o-latest -s mcp_rag_log --example_index 0-1 --self_refinement --plan
 python run.py --model grok-3-beta -s rag_log --example_index 4-5 --self_refinement --plan
 python run.py --model grok-3-beta -s base --example_index 1-20
+python run.py --model grok-3-beta -s test2 --example_index 0-20 --self_refinement --plan --rag_syntax
 """
