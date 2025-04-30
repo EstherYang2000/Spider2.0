@@ -1,1 +1,2 @@
-# WMA package initialization
+# Init for wma package
+from .wma import WeightedMajorityAlgorithm

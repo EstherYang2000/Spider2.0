@@ -18,12 +18,22 @@ from openai import AzureOpenAI
 from typing import Dict, List, Optional, Tuple, Any, TypedDict
 
 from spider_agent.agent.rag_action import RAG_QUERY
+from spider_agent.agent.schema_link_agent import SchemaLinkAgent  # <-- 新增
 
 
 
 logger = logging.getLogger("spider_agent")
 
-
+def _infer_dialect_from_env(env):
+    db_type = env.task_config.get('instance_id', '')
+    # 這裡根據 db_type 決定 dialect
+    if db_type.startswith("local"):
+        return "sqlite"
+    if db_type.startswith("sf"):
+        return "snowflake"
+    if db_type.startswith("bq") or db_type.startswith("ga"):
+        return "bigquery"
+    return None      
 class PromptAgent:
     def __init__(
         self,
@@ -33,7 +43,8 @@ class PromptAgent:
         temperature=0.5,
         max_memory_length=10,
         max_steps=15,
-        use_plan=False
+        use_plan=False,
+        use_schema_linking=False
     ):
         
         self.model = model
@@ -54,6 +65,17 @@ class PromptAgent:
         self.work_dir = "/workspace"
         self.reference_plan = None
         self.use_plan = use_plan
+        self.use_schema_linking = use_schema_linking
+        self.schema_retriever = None  # 兩階段 schema 檢索器（延遲初始化）
+        self.dialect = None
+        self.schema_string = None
+    
+    def find_ddl_csv(self, example_dir, db):
+        for root, dirs, files in os.walk(example_dir):
+            for file in files:
+                if file.lower() == "ddl.csv" and db in root:
+                    return (os.path.join(root, file), root)
+        return None
         
     def set_env_and_task(self, env: Spider_Agent_Env):
         self.env = env
@@ -77,10 +99,43 @@ class PromptAgent:
 
                 # 🔹 Retrieve relevant knowledge **only from the specific file**
                 external_knowledge_content = rag_query_action.retrieve_relevant_knowledge(knowledge_path)
-
+                self.env.task_config['evidence'] = external_knowledge_content
                 # 🔹 Add the RAG_QUERY action to the agent's memory
                 # self.actions.append(rag_query_action)
+        
+  
+        self.dialect = _infer_dialect_from_env(self.env)
+        # # ==== Schema Linking 聚焦 ====
+        import pandas as pd
+        if getattr(self, "use_schema_linking", False):
+            try:
+                ddl_path = None
+                data_path = None
+                result = self.find_ddl_csv(self.env.mnt_dir, self.env.task_config.get('db'))
+                logger.info(f"[MCP] DDL Path: {result}")
+                if result:
+                    ddl_path = result[0]
+                    data_path = result[1]
+                if ddl_path and data_path:
+                    if self.schema_retriever is None:
+                        self.schema_retriever = SchemaLinkAgent()
+                    schema = pd.read_csv(ddl_path)
+                    logger.info(f"[MCP] Schema: {schema.head(1)}")
+                    logger.info(f"[MCP] Data Path: {data_path}")
+                    logger.info(f"[MCP] Instruction: {self.instruction}")
+                    schema_string = self.schema_retriever.link(
+                        self.instruction,
+                        schema,
+                        data_path
+                    )
+                    self.env.task_config['schema'] = schema_string
+                    self.schema_string = schema_string
+                    logger.info(f"[MCP] Schema String: {schema_string}")
+                else:
+                    logger.warning("No DDL/schema path found, skipping two-stage schema retrieval.")
 
+            except Exception as e:
+                logger.warning(f"[Auto Schema] Failed to generate schema string: {e}")
         
         if self.env.task_config['type'] == 'Bigquery':
             self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, BIGQUERY_EXEC_SQL, CreateFile, EditFile]
@@ -109,8 +164,20 @@ class PromptAgent:
                 # Prepare schema string and evidence
                 schema_string = self.env.task_config.get('schema', '')
                 evidence = self.env.task_config.get('evidence', '')
-                # Generate plan
-                plan = planner.generate_plan(self.instruction, schema_string, evidence)
+
+                # Generate plan (with or without schema linking)
+                if getattr(self, "use_schema_linking", False):
+                    plan = planner.generate_plan(
+                        self.instruction,
+                        schema_string,
+                        evidence,
+                    )
+                else:
+                    plan = planner.generate_plan(
+                        self.instruction,
+                        schema_string,
+                        evidence
+                    )
                 logger.info("Generated plan in prompt agent: %s", plan)
                 self.reference_plan = plan
                 self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=plan)

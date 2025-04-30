@@ -61,9 +61,9 @@ def config() -> argparse.Namespace:
     parser.add_argument("--suffix", '-s', type=str, default="gpt-4-try1")
     
     parser.add_argument("--model", type=str, default="gpt-4o")
-    parser.add_argument("--temperature", type=float, default=0.3)
+    parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--max_tokens", type=int, default=6000)
+    parser.add_argument("--max_tokens", type=int, default=10000)
     parser.add_argument("--stop_token", type=str, default=None)
     
     # example config
@@ -85,7 +85,10 @@ def config() -> argparse.Namespace:
     parser.add_argument("--self_refinement", action="store_true", help="Enable self-refinement for SQL queries")
     parser.add_argument("--max_refinement_iterations", type=int, default=5, help="Maximum number of refinement iterations")
     parser.add_argument("--rag_syntax", action="store_true", help="Enable RAG syntax for self-refinement")
-    
+
+    # Schema linking toggle
+    parser.add_argument('--use_schema_linking', action='store_true', default=False, help='是否啟用 schema linking (預設True)')
+
     args = parser.parse_args()
 
     return args
@@ -133,7 +136,8 @@ def test(
             max_steps=args.max_steps,
             use_plan=args.plan,
             max_refinement_iterations=args.max_refinement_iterations,
-            rag_syntax=args.rag_syntax
+            rag_syntax=args.rag_syntax,
+            use_schema_linking=args.use_schema_linking
         )
     else:
         agent = PromptAgent(
@@ -163,7 +167,6 @@ def test(
             else:
                 indices = list(map(int, args.example_index.split(",")))
                 task_configs = [task_configs[i] for i in indices]
-    
     for task_config in task_configs:
         instance_id = experiment_id +"/"+ task_config["instance_id"]
         output_dir = os.path.join(args.output_dir, instance_id)
@@ -280,5 +283,8 @@ python run.py --model llamaapi_3.3 -s test1 --example_index 0-1 --self_refinemen
 python run.py --model chatgpt-4o-latest -s mcp_rag_log --example_index 0-1 --self_refinement --plan
 python run.py --model grok-3-beta -s rag_log --example_index 4-5 --self_refinement --plan
 python run.py --model grok-3-beta -s base --example_index 1-20
-python run.py --model grok-3-beta -s test2 --example_index 0-20 --self_refinement --plan --rag_syntax
+python run.py --model grok-3-beta -s test7 --example_index 11-20 --self_refinement --plan --rag_syntax
+python run.py --model o4-mini-2025-04-16 -s test3_wo_sl --example_index 11-20 --self_refinement --plan --rag_syntax --use_schema_linking
+python run.py --model grok-3-beta -s test8 --example_index 11-15 --self_refinement --plan --rag_syntax
+
 """

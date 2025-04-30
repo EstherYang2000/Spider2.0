@@ -58,7 +58,7 @@ def call_llm(payload):
                 time.sleep(4 * (2 ** (i + 1)))
         return False, code_value
     
-    elif model.startswith("o1") or model.startswith("o3"):
+    elif model.startswith("o1") or model.startswith("o3") or model.startswith("o4-mini"):
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"
@@ -66,7 +66,7 @@ def call_llm(payload):
         logger.info("Generating content with GPT model: %s", model)
         
         messages = payload["messages"]
-        top_p = payload["top_p"]
+        # top_p = payload["top_p"]
         temperature = payload["temperature"]
             
             
@@ -86,7 +86,8 @@ def call_llm(payload):
         payload["max_completion_tokens"] = 10000
         del payload['max_tokens']
         del payload["temperature"]
-        del payload["top_p"]
+        if "top_p" in payload:
+            del payload["top_p"]
 
         for i in range(3):
             try:
@@ -95,9 +96,15 @@ def call_llm(payload):
                             headers=headers,
                             json=payload
                         )
-                output_message = response.json()['choices'][0]['message']['content']
-                # logger.info(f"Input: \n{payload['messages']}\nOutput:{response}")
-                return True, output_message
+                
+                response_json = response.json()
+                if "choices" in response_json and response_json["choices"]:
+                    output_message = response_json['choices'][0]['message']['content']
+                    # logger.info(f"Input: \n{payload['messages']}\nOutput:{response}")
+                    return True, output_message
+                else:
+                    logger.error(f"OpenAI API returned unexpected response: {response_json}")
+                    return False, response_json.get("error", {}).get("message", "No 'choices' in response")
             except Exception as e:
                 logger.error("Failed to call LLM: " + str(e))
                 logger.error("Retrying ...")

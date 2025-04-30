@@ -16,7 +16,6 @@ from spider_agent.agent.agents import PromptAgent
 from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
 from spider_agent.agent.action import Terminate, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL
 from spider_agent.agent.models import call_llm
-
 logger = logging.getLogger("spider_agent")
 
 @dataclass
@@ -66,7 +65,8 @@ class RefinementLogRAG:
             "error": "Syntax error: Unterminated string literal",
             "success": True,
             "error_type": "StringLiteral",
-            "description": "MySQL/SQLite: Fix single quotes by escaping with backslash"
+            "description": "MySQL/SQLite: Fix single quotes by escaping with backslash",
+            "dialect": "sqlite"
         },
         # BigQuery/PostgreSQL style (double single quotes)
         {
@@ -75,7 +75,8 @@ class RefinementLogRAG:
             "error": "Syntax error: Unterminated string literal",
             "success": True,
             "error_type": "StringLiteral",
-            "description": "BigQuery/PostgreSQL: Fix single quotes by doubling them"
+            "description": "BigQuery/PostgreSQL: Fix single quotes by doubling them",
+            "dialect": "bigquery"
         },
         # Snowflake: String literal with single quotes (double single quotes)
         {
@@ -84,7 +85,8 @@ class RefinementLogRAG:
             "error": "SQL compilation error: syntax error line 1 at position ...",
             "success": True,
             "error_type": "StringLiteral",
-            "description": "Snowflake: Fix single quotes in string literals by doubling them"
+            "description": "Snowflake: Fix single quotes in string literals by doubling them",
+            "dialect": "snowflake"
         },
         # Snowflake: Quoting identifiers (case sensitivity)
         {
@@ -93,7 +95,8 @@ class RefinementLogRAG:
             "error": "SQL compilation error: Unknown column 'ProductName'",
             "success": True,
             "error_type": "IdentifierCase",
-            "description": "Snowflake: Use double quotes for case-sensitive identifiers"
+            "description": "Snowflake: Use double quotes for case-sensitive identifiers",
+            "dialect": "snowflake"
         },
         # Snowflake: Data type conversion
         {
@@ -102,7 +105,8 @@ class RefinementLogRAG:
             "error": "SQL compilation error: Cannot apply '+' to arguments of type ...",
             "success": True,
             "error_type": "TypeMismatch",
-            "description": "Snowflake: Use CAST and '||' for string concatenation"
+            "description": "Snowflake: Use CAST and '||' for string concatenation",
+            "dialect": "snowflake"
         },
         # Snowflake: Date/time parsing
         {
@@ -111,7 +115,8 @@ class RefinementLogRAG:
             "error": "SQL compilation error: Can't compare date with string",
             "success": True,
             "error_type": "DateTime",
-            "description": "Snowflake: Use TO_DATE or TO_TIMESTAMP for date/time comparisons"
+            "description": "Snowflake: Use TO_DATE or TO_TIMESTAMP for date/time comparisons",
+            "dialect": "snowflake"
         },
         # Snowflake: Ambiguous column reference in JOIN
         {
@@ -120,7 +125,8 @@ class RefinementLogRAG:
             "error": "SQL compilation error: ambiguous column reference 'id'",
             "success": True,
             "error_type": "JoinCondition",
-            "description": "Snowflake: Fully qualify column names in JOIN conditions"
+            "description": "Snowflake: Fully qualify column names in JOIN conditions",
+            "dialect": "snowflake"
         },
         {
             "original_sql": "SELECT COUNT(*) products GROUP BY category",
@@ -128,7 +134,8 @@ class RefinementLogRAG:
             "error": "Syntax error: FROM keyword not found",
             "success": True,
             "error_type": "MissingKeyword",
-            "description": "Add missing FROM clause in the query"
+            "description": "Add missing FROM clause in the query",
+            "dialect": "sqlite"
         },
         {
             "original_sql": "SELECT * FROM orders INNER JOIN users ON user_id",
@@ -136,7 +143,8 @@ class RefinementLogRAG:
             "error": "Syntax error: ON clause must be a boolean expression",
             "success": True,
             "error_type": "JoinCondition",
-            "description": "Specify complete JOIN condition with table names and fields"
+            "description": "Specify complete JOIN condition with table names and fields",
+            "dialect": "sqlite"
         },
         {
             "original_sql": "SELECT product_name, SUM(quantity), AVG(price) FROM sales",
@@ -144,7 +152,8 @@ class RefinementLogRAG:
             "error": "Syntax error: Column must appear in the GROUP BY clause or be used in an aggregate function",
             "success": True,
             "error_type": "GroupBy",
-            "description": "Add missing GROUP BY clause for non-aggregated columns"
+            "description": "Add missing GROUP BY clause for non-aggregated columns",
+            "dialect": "sqlite"
         },
         {
             "original_sql": "SELECT * FROM orders WHERE date = '2023-01-01' AND time BETWEEN '09:00' AND '17:00'",
@@ -152,21 +161,23 @@ class RefinementLogRAG:
             "error": "Syntax error: Invalid timestamp format",
             "success": True,
             "error_type": "DateTime",
-            "description": "Use correct date/time functions and standard format for timestamps"
+            "description": "Use correct date/time functions and standard format for timestamps",
+            "dialect": "sqlite"
         }
     ]
 
-    def __init__(self, log_path="refinement_history.jsonl", model_name="all-MiniLM-L6-v2"):
+    def __init__(self, log_path="refinement_history.jsonl", model_name="all-MiniLM-L6-v2", dialect=None):
         self.log_path = log_path
         self.model = SentenceTransformer(model_name)
         self.logs = []
         self.embeddings = None
+        self.dialect = dialect
         self._load_and_embed_logs()
 
     def _load_and_embed_logs(self):
         import os, json
         # 首先加载预定义的案例
-        self.logs = self.PREDEFINED_CASES.copy()
+        self.logs = [case for case in self.PREDEFINED_CASES if case.get("dialect") == self.dialect]
         
         # 然后加载历史记录
         if os.path.exists(self.log_path):
@@ -174,7 +185,8 @@ class RefinementLogRAG:
                 for line in f:
                     try:
                         case = json.loads(line)
-                        self.logs.append(case)
+                        if case.get("dialect") == self.dialect:
+                            self.logs.append(case)
                     except Exception:
                         continue
         if self.logs:
@@ -200,6 +212,8 @@ class SelfRefinementAgent(PromptAgent):
         """
         if not success:
             return
+        if "Results saved to /workspace/result.csv" in error:
+            return
         import json
         record = {
             "original_sql": original_sql,
@@ -216,7 +230,7 @@ class SelfRefinementAgent(PromptAgent):
     def retrieve_similar_refinements(self, sql_query, top_k=2):
         """Retrieve similar past refinements using semantic vector search (RAG)."""
         if not hasattr(self, "_refinement_rag") or self._refinement_rag is None:
-            self._refinement_rag = RefinementLogRAG(self.refinement_log_path)
+            self._refinement_rag = RefinementLogRAG(self.refinement_log_path, dialect=self.dialect)
         # Always reload in case log updated (can optimize if needed)
         self._refinement_rag._load_and_embed_logs()
         return self._refinement_rag.retrieve_similar(sql_query, top_k)
@@ -311,6 +325,7 @@ class SelfRefinementAgent(PromptAgent):
         rag_syntax=False,            # 新增：是否啟用 BigQuery syntax RAG
         self_refinement_enabled=True,  # 新增：是否啟用自我修正
         expected_csv_format=None,   # 新增：答案格式要求
+        use_schema_linking=False  # 新增：是否啟用 schema linking
     ):
         super().__init__(
             model=model,
@@ -334,6 +349,9 @@ class SelfRefinementAgent(PromptAgent):
         self.plan_critique = None
         self.self_refinement_enabled = self_refinement_enabled  # 新增：自我修正开关
         self.expected_csv_format = expected_csv_format  # 新增：答案格式要求
+        self.use_schema_linking = use_schema_linking  # 新增：是否啟用 schema linking
+        self.schema_retriever = None  # 兩階段 schema 檢索器（延遲初始化）
+ 
 
     def _self_refine(self, original_sql, obs, error_msg=None, empty_result=False):
         """
@@ -437,12 +455,29 @@ class SelfRefinementAgent(PromptAgent):
 
         # If all attempts fail, return last result
         return False, refined_sql, obs, error_type, action
-
+    
     def run(self):
         """
         Override the run method to include MCP loop: Planning, Critique, and Multi-step Refinement with self-refinement on error or empty result.
         """
         assert self.env is not None, "Environment is not set."
+        # --- 自動尋找 ddl.csv 並導入兩階段 Schema 檢索 Patch ---
+        if getattr(self, "use_schema_linking", False):
+            logger.info(self.schema_string)
+            if not self.schema_string:
+                ddl_path = None
+                ddl_path = self.find_ddl_csv(self.env.mnt_dir, self.env.task_config.get('db'))
+                logger.info(f"[MCP] DDL Path: {ddl_path}")
+                ddl_path = None if not ddl_path else ddl_path[0]
+                if ddl_path:
+                    if self.schema_retriever is None:
+                        self.schema_retriever = TwoStageSchemaRetriever(ddl_path)
+                    schema_string = self.schema_retriever.retrieve(
+                        getattr(self.env, 'question', self.env.task_config.get('question', ''))
+                    )
+                self.schema_string = schema_string
+            else:
+                logger.warning("No DDL/schema path found, skipping two-stage schema retrieval.")
         result = ""
         done = False
         step_idx = 0
@@ -458,17 +493,64 @@ class SelfRefinementAgent(PromptAgent):
             schema_string = self.env.task_config.get('schema', '')
             evidence = self.env.task_config.get('evidence', '')
             question = self.env.task_config.get('question', '')
-            self.reference_plan = self.planner_agent.generate_plan(question, schema_string, evidence)
-            logger.info(f"[MCP] Generated Plan: {self.reference_plan}") 
-        # Plan critique (only once)
-        self.plan_critique = self.critique_agent.critique_sql(
-            self.reference_plan,  # 直接用 reference_plan 當作 "sql_query" 參數
-            self.reference_plan,  # 也可傳 plan 當作 plan
-            self.env.task_config.get('question', ''),
-            self.env.task_config.get('schema', ''),
-            self.env.task_config.get('evidence', '')
-        )
-        logger.info(f"[MCP] Plan Critique: {self.plan_critique}")
+            if self.use_schema_linking:
+                # === Schema Linking Agent (先做 schema linking) ===
+                try:
+                    from spider_agent.agent.schema_link_agent import SchemaLinkAgent
+                    if not hasattr(self, 'schema_link_agent'):
+                        self.schema_link_agent = SchemaLinkAgent()
+                    schema_linking_result = self.schema_link_agent.link(question, schema_string)
+                    logger.info(f"[MCP] Schema Linking: {schema_linking_result}")
+                    self.env.task_config['linked_tables'] = schema_linking_result['linked_tables']
+                    self.env.task_config['linked_columns'] = schema_linking_result['linked_columns']
+                except Exception as e:
+                    logger.error(f"[MCP] Schema Linking failed: {e}")
+                # 再產生 plan，可將 linking 結果傳給 planner（如 planner 支援）
+                self.reference_plan = self.planner_agent.generate_plan(
+                    question, schema_string, evidence,
+                )
+            else:
+            # 不啟用 schema linking，直接產生 plan
+                self.reference_plan = self.planner_agent.generate_plan(
+                question, schema_string, evidence
+            )
+        logger.info(f"[MCP] Generated Plan in the Refinement Agent: {self.reference_plan}")
+
+        max_plan_refine = 2
+        refine_count = 0
+        while refine_count < max_plan_refine:
+            self.plan_critique = self.critique_agent.critique_sql(
+                self.reference_plan,
+                self.reference_plan,
+                self.env.task_config.get('question', ''),
+                self.env.task_config.get('schema', ''),
+                self.env.task_config.get('evidence', '')
+            )[1]
+            logger.info(f"[MCP] Plan Critique: {self.plan_critique}")
+            if self.plan_critique and "no issue" not in self.plan_critique.lower():
+                self.reference_plan.setdefault('critique_notes', []).append(self.plan_critique)
+                # === 自動修正 plan ===
+                plan_prompt = (
+                    f"Original Plan:\n{self.reference_plan['plan']}\n\n"
+                    f"Critique Notes:\n" + "\n".join(self.reference_plan['critique_notes']) +
+                    "\n\nPlease revise the plan to address the above critique notes. Output a numbered step-by-step plan."
+                )
+                # 用 LLM 產生新 plan，可用 planner_agent 或 call_llm
+                revised_plan_result = self.planner_agent.generate_plan(
+                    question=self.env.task_config.get('question', ''),
+                    schema_string=self.env.task_config.get('schema', ''),
+                    evidence=self.env.task_config.get('evidence', ''),
+                    prompt_prefix= plan_prompt
+                )
+                # 保留 critique_notes
+                if isinstance(revised_plan_result, dict):
+                    revised_plan_result['critique_notes'] = self.reference_plan['critique_notes']
+                    self.reference_plan = revised_plan_result
+                else:
+                    self.reference_plan['plan'] = revised_plan_result
+                refine_count += 1
+            else:
+                break
 
         # ====== 主動詢問 LLM 需要哪些 BigQuery syntax 補充 ======
         syntax_reference = ""
@@ -514,16 +596,23 @@ class SelfRefinementAgent(PromptAgent):
         # ======================================================
 
         # 2. MCP Loop: SQL generation, critique, refinement
-        def get_plan_step(plan: str, idx: int) -> str:
-            """Extract the idx-th step from a numbered plan string."""
+        def get_plan_step(plan_obj, idx: int) -> str:
+            """Extract the idx-th step from a numbered plan string, and append critique notes if any."""
             import re
+            plan = plan_obj['plan'] if isinstance(plan_obj, dict) else plan_obj
             steps = re.findall(r'\d+\.\s*(.*?)(?=\n\d+\.|$)', plan, re.DOTALL)
             if not steps:
-                return plan.strip()  # fallback: whole plan if not numbered
-            if idx < len(steps):
-                return steps[idx].strip()
+                step_text = plan.strip()  # fallback: whole plan if not numbered
+            elif idx < len(steps):
+                step_text = steps[idx].strip()
             else:
-                return steps[-1].strip()  # fallback: last step
+                step_text = steps[-1].strip()  # fallback: last step
+            # 動態補入 critique_notes
+            critique_notes = plan_obj.get('critique_notes', []) if isinstance(plan_obj, dict) else []
+            if critique_notes:
+                notes = "\n".join([f"[Critique Note] {note}" for note in critique_notes])
+                step_text += f"\n\n{notes}"
+            return step_text
 
         while not done and step_idx < self.max_steps:
             # On the first step, include the full reference plan; otherwise, only the current step
@@ -563,8 +652,12 @@ class SelfRefinementAgent(PromptAgent):
                 schema_string = self.env.task_config.get('schema', '')
                 evidence = self.env.task_config.get('evidence', '')
                 question = self.env.task_config.get('question', '')
-                critique_msg = self.critique_agent.critique_sql(sql_query, self.reference_plan, question, schema_string, evidence)
+                critique_msg = self.critique_agent.critique_sql(sql_query, self.reference_plan, question, schema_string, evidence,execution_feedback=obs)[1]
                 logger.info(f"[MCP] Critique: {critique_msg}")
+                # 若為結構性問題，寫回 plan['critique_notes']
+                if critique_msg and any(x in critique_msg.lower() for x in ["group by", "missing", "structure", "aggregate", "column", "select", "where", "join"]):
+                    if isinstance(self.reference_plan, dict):
+                        self.reference_plan.setdefault('critique_notes', []).append(critique_msg)
 
             if last_action is not None and last_action == action:
                 if repeat_action:
