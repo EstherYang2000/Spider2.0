@@ -6,6 +6,65 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 class RefinementLogRAG:
+
+    def match(self, sql: str, error_type: Optional[str] = None, top_k: int = 3, threshold: float = 0.8):
+        """
+        比對與輸入 SQL 語意相近、錯誤類型相符的歷史記錄
+        回傳 [(score, record_dict), ...] 排序列表
+        """
+        if not hasattr(self, "model"):
+            self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        if not hasattr(self, "index"):
+            self._build_index()
+        if not hasattr(self, "records"):
+            self._load_records()
+
+        # 編碼查詢 SQL
+        query_vec = self.model.encode([sql])
+        D, I = self.index.search(query_vec, top_k * 5)  # 抓更多來過濾 error_type
+
+        matches = []
+        for dist, idx in zip(D[0], I[0]):
+            if idx == -1:
+                continue
+            score = 1 - dist  # 轉為 cosine similarity
+            if score < threshold:
+                continue
+            record = self.records[idx]
+            if error_type and record.get("error_type") != error_type:
+                continue
+            matches.append((score, record))
+            if len(matches) >= top_k:
+                break
+        return matches
+
+    def _build_index(self):
+        """初始化 FAISS 向量索引"""
+        self.records = []
+        self.vectors = []
+
+        for case in self.PREDEFINED_CASES:
+            if case.get("success") and "original_sql" in case:
+                self.records.append(case)
+                self.vectors.append(self._encode(case["original_sql"]))
+
+        self.index = faiss.IndexFlatL2(len(self.vectors[0]))
+        self.index.add(np.array(self.vectors).astype('float32'))
+
+    def _encode(self, text):
+        if not hasattr(self, "model"):
+            self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        return self.model.encode(text)
+
+    def _load_records(self):
+        """
+        可擴充自動載入更多訓練資料（目前為空，使用 PREDEFINED_CASES）
+        """
+        if not hasattr(self, "records"):
+            self.records = []
+        if not self.records:
+            self.records = self.PREDEFINED_CASES
+
     # Predefined common SQL syntax error correction examples
     PREDEFINED_CASES = [
         {
@@ -329,7 +388,6 @@ if __name__ == "__main__":
     query_sql = "SELECT * FROM orders WHERE order_date = '2023-01-01'"
     query_error = "Cannot compare DATE with STRING"
     query_type = "DateTime"
-
     similar_cases = memory_bank.retrieve(
         query_text=f"{query_sql} || {query_error} || {query_type}",
         top_k=3,
