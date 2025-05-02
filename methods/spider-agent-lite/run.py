@@ -127,7 +127,15 @@ def test(
     
     # Create the appropriate agent based on arguments
     if args.self_refinement:
+        from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
+        # 初始化 env、planner_agent、critique_agent
+        env = None  # 先設為 None，稍後 set_env_and_task 會補上
+        planner_agent = PlannerAgent(model=args.model)
+        critique_agent = CritiqueAgent(model=args.model)
         agent = SelfRefinementAgent(
+            env=env,
+            planner_agent=planner_agent,
+            critique_agent=critique_agent,
             model=args.model,
             max_tokens=args.max_tokens,
             top_p=args.top_p,
@@ -148,7 +156,6 @@ def test(
             max_memory_length=args.max_memory_length,
             max_steps=args.max_steps,
             use_plan=args.plan,
-            rag_syntax=args.rag_syntax
         )
     valid_ids = []
     ## load task configs
@@ -285,6 +292,7 @@ python run.py --model grok-3-beta -s rag_log --example_index 4-5 --self_refineme
 python run.py --model grok-3-beta -s base --example_index 1-20
 python run.py --model grok-3-beta -s test7 --example_index 11-20 --self_refinement --plan --rag_syntax
 python run.py --model o4-mini-2025-04-16 -s test3_wo_sl --example_index 11-20 --self_refinement --plan --rag_syntax --use_schema_linking
-python run.py --model grok-3-beta -s test8 --example_index 11-15 --self_refinement --plan --rag_syntax
+python run.py --model grok-3-beta -s test12 --example_index 0-10 --self_refinement --plan --use_schema_linking
+python run.py --model gemini-2.5-pro-preview-03-25 -s test8 --example_index 0-5 --self_refinement --plan --use_schema_linking
 
 """

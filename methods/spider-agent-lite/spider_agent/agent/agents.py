@@ -19,21 +19,40 @@ from typing import Dict, List, Optional, Tuple, Any, TypedDict
 
 from spider_agent.agent.rag_action import RAG_QUERY
 from spider_agent.agent.schema_link_agent import SchemaLinkAgent  # <-- 新增
-
+from spider_agent.agent.schema_agent import SchemaAgent, SchemaAgentEnv
 
 
 logger = logging.getLogger("spider_agent")
 
-def _infer_dialect_from_env(env):
-    db_type = env.task_config.get('instance_id', '')
-    # 這裡根據 db_type 決定 dialect
-    if db_type.startswith("local"):
+def _infer_dialect_from_env(env) -> str:
+    """推斷 SQL dialect，根據 instance_id 前綴或其他 task_config 設定。"""
+    db_type = env.task_config.get('instance_id', '').lower()
+
+    if db_type.startswith("local") or "sqlite" in db_type:
         return "sqlite"
-    if db_type.startswith("sf"):
+    if db_type.startswith("sf") or "snowflake" in db_type:
         return "snowflake"
-    if db_type.startswith("bq") or db_type.startswith("ga"):
+    if db_type.startswith("bq") or db_type.startswith("ga") or "bigquery" in db_type:
         return "bigquery"
-    return None      
+    if "pg" in db_type or "postgres" in db_type:
+        return "postgres"
+    if "mysql" in db_type:
+        return "mysql"
+    
+    return "generic"  # 預設 fallback
+
+def critique_needs_schema(critique_notes):
+    schema_keywords = [
+        "missing column", "missing table", "unknown column", "unknown table",
+        "schema insufficient", "no such column", "no such table",
+        "not found in schema", "schema missing", "column not found", "table not found"
+    ]
+    for note in critique_notes:
+        note_lower = note.lower()
+        if any(kw in note_lower for kw in schema_keywords):
+            return True
+    return False
+
 class PromptAgent:
     def __init__(
         self,
@@ -44,7 +63,9 @@ class PromptAgent:
         max_memory_length=10,
         max_steps=15,
         use_plan=False,
-        use_schema_linking=False
+        use_schema_linking=False,
+        env=None,
+        llm_predict=None
     ):
         
         self.model = model
@@ -60,7 +81,7 @@ class PromptAgent:
         self.observations = []
         self.system_message = ""
         self.history_messages = []
-        self.env = None
+        self.env = env
         self.codes = []
         self.work_dir = "/workspace"
         self.reference_plan = None
@@ -69,6 +90,12 @@ class PromptAgent:
         self.schema_retriever = None  # 兩階段 schema 檢索器（延遲初始化）
         self.dialect = None
         self.schema_string = None
+        # --- 初始化 schema_agent ---
+        self.schema_agent_env = None
+        if llm_predict is None:
+            def llm_predict(obs):
+                raise NotImplementedError("llm_predict function must be provided!")
+        self.schema_agent = None
     
     def find_ddl_csv(self, example_dir, db):
         for root, dirs, files in os.walk(example_dir):
@@ -76,7 +103,20 @@ class PromptAgent:
                 if file.lower() == "ddl.csv" and db in root:
                     return (os.path.join(root, file), root)
         return None
-        
+    def generate_reference_plan(self):
+        from spider_agent.agent.planner_critique_agents import PlannerAgent
+        if self.planner_agent is None:
+            self.planner_agent = PlannerAgent(model=self.model)
+        if not self.reference_plan:
+            question = self.env.task_config.get('question', '')
+            schema_string = self.env.task_config.get('schema', '')
+            evidence = self.env.task_config.get('evidence', '')
+            self.reference_plan = self.planner_agent.generate_plan(
+                question=question,
+                schema_string=schema_string,
+                evidence=evidence
+            )
+        logger.info(f"[MCP] Generated Plan: {self.reference_plan}")   
     def set_env_and_task(self, env: Spider_Agent_Env):
         self.env = env
         self.thoughts = []
@@ -105,38 +145,8 @@ class PromptAgent:
         
   
         self.dialect = _infer_dialect_from_env(self.env)
-        # # ==== Schema Linking 聚焦 ====
-        import pandas as pd
-        if getattr(self, "use_schema_linking", False):
-            try:
-                ddl_path = None
-                data_path = None
-                result = self.find_ddl_csv(self.env.mnt_dir, self.env.task_config.get('db'))
-                logger.info(f"[MCP] DDL Path: {result}")
-                if result:
-                    ddl_path = result[0]
-                    data_path = result[1]
-                if ddl_path and data_path:
-                    if self.schema_retriever is None:
-                        self.schema_retriever = SchemaLinkAgent()
-                    schema = pd.read_csv(ddl_path)
-                    logger.info(f"[MCP] Schema: {schema.head(1)}")
-                    logger.info(f"[MCP] Data Path: {data_path}")
-                    logger.info(f"[MCP] Instruction: {self.instruction}")
-                    schema_string = self.schema_retriever.link(
-                        self.instruction,
-                        schema,
-                        data_path
-                    )
-                    self.env.task_config['schema'] = schema_string
-                    self.schema_string = schema_string
-                    logger.info(f"[MCP] Schema String: {schema_string}")
-                else:
-                    logger.warning("No DDL/schema path found, skipping two-stage schema retrieval.")
 
-            except Exception as e:
-                logger.warning(f"[Auto Schema] Failed to generate schema string: {e}")
-        
+            
         if self.env.task_config['type'] == 'Bigquery':
             self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, BIGQUERY_EXEC_SQL, CreateFile, EditFile]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
@@ -153,34 +163,67 @@ class PromptAgent:
             self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = DBT_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
+        
+                # # ==== Schema Linking 聚焦 ====
+        import pandas as pd
+        if getattr(self, "use_schema_linking", False):
+            # try:
+            #     ddl_path = None
+            #     data_path = None
+            #     result = self.find_ddl_csv(self.env.mnt_dir, self.env.task_config.get('db'))
+            #     logger.info(f"[MCP] DDL Path: {result}")
+            #     if result:
+            #         ddl_path = result[0]
+            #         data_path = result[1]
+            #     if ddl_path and data_path:
+            #         if self.schema_retriever is None:
+            #             self.schema_retriever = SchemaLinkAgent()
+            #         schema = pd.read_csv(ddl_path)
+            #         logger.info(f"[MCP] Schema: {schema.head(1)}")
+            #         logger.info(f"[MCP] Data Path: {data_path}")
+            #         logger.info(f"[MCP] Instruction: {self.instruction}")
+            #         schema_string = self.schema_retriever.link(
+            #             self.instruction,
+            #             schema,
+            #             data_path
+            #         )
+            #         self.env.task_config['schema'] = schema_string
+            #         self.schema_string = schema_string
+            #         logger.info(f"[MCP] Schema String: {schema_string}")
+            #     else:
+            #         logger.warning("No DDL/schema path found, skipping two-stage schema retrieval.")
+
+            # except Exception as e:
+            #     logger.warning(f"[Auto Schema] Failed to generate schema string: {e}")
+            # 自動補 schema（如果還沒 schema）
+                    # --- 初始化 schema_agent ---
+            self.schema_agent_env = SchemaAgentEnv(base_dir=self.env.mnt_dir)
+            self.schema_agent = SchemaAgent(self.schema_agent_env, llm_predict=self.predict)
+            if not self.schema_string:
+                logger.info("[MCP] No schema found, invoking SchemaAgent to generate schema...")
+                
+                self.schema_string = self.schema_agent.run(
+                    user_question=self.env.task_config.get('question', self.instruction),
+                    critique_note=None  # 第一次通常沒有 critique
+                )
+                # self.schema_string = self.schema_agent.format_schema_prompt(self.schema_string)
+
+                logger.info(f"SchemaAgent generated new schema: {self.schema_string}")
+                self.env.task_config['schema'] = self.schema_string
+
+        
         logger.info("Reference_plan: %s", self.use_plan)
+
+
         # --- Planning and Critique Integration ---
         if self.use_plan:
             # If no plan is provided, generate one using PlannerAgent and critique using CritiqueAgent
             try:
                 logger.info("Generating plan...")
-                from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
-                planner = PlannerAgent(model=self.model)
-                # Prepare schema string and evidence
-                schema_string = self.env.task_config.get('schema', '')
-                evidence = self.env.task_config.get('evidence', '')
-
                 # Generate plan (with or without schema linking)
-                if getattr(self, "use_schema_linking", False):
-                    plan = planner.generate_plan(
-                        self.instruction,
-                        schema_string,
-                        evidence,
-                    )
-                else:
-                    plan = planner.generate_plan(
-                        self.instruction,
-                        schema_string,
-                        evidence
-                    )
-                logger.info("Generated plan in prompt agent: %s", plan)
-                self.reference_plan = plan
-                self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=plan)
+                self.generate_reference_plan()
+                logger.info("Generated plan in prompt agent: %s", self.reference_plan)
+                self.system_message += REFERENCE_PLAN_SYSTEM.format(plan=self.reference_plan)
 
             except Exception as e:
                 import traceback
@@ -244,7 +287,7 @@ class PromptAgent:
         except ValueError as e:
             print("Failed to parse action from response", e)
             action = None
-        
+        logger.info("Thought: %s", thought)
         logger.info("Observation: %s", obs)
         logger.info("Response: %s", response)
 
@@ -289,12 +332,19 @@ class PromptAgent:
         import re
 
         action_string = None
-        logger.info("Output: %s", output)
         # Multi-line robust action extraction
         multiline_patterns = [
             r'Action\s*:\s*((?:.|\n)*?)(?=^Thought:|^Observation:|\Z)',  # up to next block or end
-            r'Action\s*:\s*((?:.|\n)*)'  # fallback: grab everything after Action:
+            r'Action\s*:\s*((?:.|\n)*)' , # fallback: grab everything after Action:
+            r'Action\s*:\s*((?:.|\n)*?)(?=^Thought:|^Observation:|^\[\d{4}-|\Z)',
+            r'Action\s*:\s*([A-Z_]+\s*\(.*)',
+            r'Action\s*:\s*((?:[A-Z_]+\s*\(.*?^\))|(?:[A-Z_]+\s*\(.*\Z))',
+            r'Action\s*:\s*([A-Z_]+\s*\((?:.|\n)*?\))'
+
+
         ]
+        
+
         # If output is a dict (e.g., {'thought':..., 'action':..., 'response':...})
         if isinstance(output, dict):
             action_string = output.get('action')
@@ -318,13 +368,14 @@ class PromptAgent:
                     break
             if not action_string:
                 action_string = output.strip()
-
+            # logger.info("Parsed action string: %s", action_string)
         output_action = None
         for action_cls in self._AVAILABLE_ACTION_CLASSES:
             action = action_cls.parse_action_from_text(action_string)
             if action is not None:
                 output_action = action
                 break
+        # logger.info("Parsed action: %s", output_action)
         if output_action is None:
             action_string = action_string.replace("\_", "_").replace("'''","```")
             for action_cls in self._AVAILABLE_ACTION_CLASSES:
@@ -332,6 +383,7 @@ class PromptAgent:
                 if action is not None:
                     output_action = action
                     break
+        logger.info("Parsed action: %s", output_action)
         return output_action
 
     

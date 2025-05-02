@@ -213,14 +213,27 @@ The `save_path` CSV must be under the `/workspace` directory.
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional['BIGQUERY_EXEC_SQL']:
-        pattern = r'BIGQUERY_EXEC_SQL\(sql_query=(?P<quote>\"\"\"|\"|\'|\"\"|\'\')(.*?)(?P=quote), is_save=(True|False)(, save_path=(?P<quote2>\"|\'|\"\"|\'\')(.*?)(?P=quote2))?\)'
-        
-        match = re.search(pattern, text, flags=re.DOTALL)
+        # pattern = r'BIGQUERY_EXEC_SQL\(sql_query=(?P<quote>\"\"\"|\"|\'|\"\"|\'\')(.*?)(?P=quote), is_save=(True|False)(, save_path=(?P<quote2>\"|\'|\"\"|\'\')(.*?)(?P=quote2))?\)'
+        pattern = r'''
+        BIGQUERY_EXEC_SQL\(
+            \s*sql_query\s*=\s*
+            (?P<quote_sql>\"\"\"|\"|\'\'\'|\')  # Match opening quote for sql_query
+            (?P<sql_query>.*?)
+            (?<!\\)(?P=quote_sql)              # Match closing quote for sql_query
+            ,\s*is_save\s*=\s*
+            (?P<is_save>True|False)
+            (?:,\s*save_path\s*=\s*
+                (?P<quote_path>\"\"\"|\"|\'\'\'|\')  # Match opening quote for save_path
+                (?P<save_path>.*?)
+                (?<!\\)(?P=quote_path)              # Match closing quote for save_path
+            )?
+            \s*\)
+    '''
+        match = re.search(pattern, text, flags=re.DOTALL | re.VERBOSE)
         if match:
-            sql_query = match.group(2).strip()  # Capturing the SQL query part
-            is_save = match.group(3).strip().lower() == 'true'  # Determining is_save
-            save_path = match.group(6) if match.group(6) else ""  # Optional save_path handling
-            
+            sql_query = match.group('sql_query').strip()  # Capturing the SQL query part
+            is_save = match.group('is_save').strip().lower() == 'true'  # Determining is_save
+            save_path = match.group('save_path') if match.group('save_path') else ""  # Optional save_path handling
             return cls(sql_query=sql_query, is_save=is_save, save_path=save_path)
         return None
 
@@ -457,3 +470,72 @@ class Terminate(Action):
         return None
     
 
+if __name__ == '__main__':
+    text = '''BIGQUERY_EXEC_SQL(
+    sql_query="""
+    WITH sessions AS (
+        SELECT
+            fullVisitorId,
+            PARSE_DATE('%Y%m%d', date) AS session_date,
+            EXTRACT(YEAR FROM PARSE_DATE('%Y%m%d', date)) AS year,
+            EXTRACT(MONTH FROM PARSE_DATE('%Y%m%d', date)) AS month,
+            IFNULL(totals.pageviews, 0) AS pageviews,
+            IFNULL(totals.transactions, 0) AS transactions
+        FROM
+            `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+        WHERE
+            _TABLE_SUFFIX BETWEEN '20170601' AND '20170731'
+            AND totals.pageviews IS NOT NULL
+    ),
+    classified_sessions AS (
+        SELECT
+            fullVisitorId,
+            FORMAT_DATE('%Y-%m', session_date) AS month,
+            pageviews,
+            CASE WHEN transactions >= 1 THEN 'purchase' ELSE 'non_purchase' END AS session_type
+        FROM sessions
+    ),
+    visitor_monthly_classification AS (
+        SELECT
+            fullVisitorId,
+            month,
+            session_type,
+            SUM(pageviews) AS total_pageviews
+        FROM classified_sessions
+        GROUP BY fullVisitorId, month, session_type
+    ),
+    all_visitors_months AS (
+        SELECT DISTINCT fullVisitorId, month
+        FROM classified_sessions
+    ),
+    visitor_monthly_wide AS (
+        SELECT
+            v.fullVisitorId,
+            v.month,
+            IFNULL(p.total_pageviews, 0) AS purchase_pageviews,
+            IFNULL(np.total_pageviews, 0) AS non_purchase_pageviews
+        FROM all_visitors_months v
+        LEFT JOIN (
+            SELECT * FROM visitor_monthly_classification WHERE session_type = 'purchase'
+        ) p
+        ON v.fullVisitorId = p.fullVisitorId AND v.month = p.month
+        LEFT JOIN (
+            SELECT * FROM visitor_monthly_classification WHERE session_type = 'non_purchase'
+        ) np
+        ON v.fullVisitorId = np.fullVisitorId AND v.month = np.month
+    )
+    SELECT
+        month,
+        AVG(purchase_pageviews) AS purchase_avg_pageviews,
+        AVG(non_purchase_pageviews) AS non_purchase_avg_pageviews
+    FROM visitor_monthly_wide
+    GROUP BY month
+    ORDER BY month
+    """,
+    is_save=True,
+    save_path="/workspace/result.csv"
+    )'''
+
+    parsed = BIGQUERY_EXEC_SQL.parse_action_from_text(text)
+    print("✅ Parsed result:\n", parsed)
+    
