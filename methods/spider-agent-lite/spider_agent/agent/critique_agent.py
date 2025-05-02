@@ -9,6 +9,45 @@ class CritiqueAgent:
     """
     Agent for critiquing either a step-by-step plan or an SQL query.
     """
+    def format_correct(self, response: str) -> bool:
+        """確認回傳內容中包含有效 SQL action 字串"""
+        pattern_list = [
+            r'''
+                BIGQUERY_EXEC_SQL\(
+                    \s*sql_query\s*=\s*
+                    (?P<quote_sql>\"\"\"|\"|\'\'\'|\')  # Match opening quote for sql_query
+                    (?P<sql_query>.*?)
+                    (?<!\\)(?P=quote_sql)              # Match closing quote for sql_query
+                    ,\s*is_save\s*=\s*
+                    (?P<is_save>True|False)
+                    (?:,\s*save_path\s*=\s*
+                        (?P<quote_path>\"\"\"|\"|\'\'\'|\')  # Match opening quote for save_path
+                        (?P<save_path>.*?)
+                        (?<!\\)(?P=quote_path)              # Match closing quote for save_path
+                    )?
+                    \s*\)
+            ''',
+            r'''
+            SNOWFLAKE_EXEC_SQL\(
+                \s*sql_query\s*=\s*
+                (?P<quote_sql>\"\"\"|\"|\'\'\'|\'|\"\"\")  # Match opening quote for sql_query
+                (?P<sql_query>.*?)
+                (?<!\\)(?P=quote_sql)                      # Match closing quote for sql_query
+                ,\s*is_save\s*=\s*
+                (?P<is_save>True|False)
+                (?:,\s*save_path\s*=\s*
+                    (?P<quote_path>\"\"\"|\"|\'\'\'|\'|\"\"\")  # Match opening quote for save_path
+                    (?P<save_path>.*?)
+                    (?<!\\)(?P=quote_path)                     # Match closing quote for save_path
+                )?
+                \s*\)
+            ''',
+            r'LOCAL_DB_SQL\(file_path=(.*?), command=(.*?), output=(.*?)\)'
+            ]
+        for pattern in pattern_list:
+            if re.search(pattern, response, re.DOTALL):
+                return True
+        return False
     def __init__(self, model="gpt-4", max_tokens=800, temperature=0.3):
         self.model = model
         self.max_tokens = max_tokens
@@ -99,11 +138,16 @@ class CritiqueAgent:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         }
-        response = call_llm(payload)
-        if not response:
-            return {"reasoning": "", "revised_sql": "", "raw": ""}
-
-        return self._parse_critique_sql_response(response[1])
+        max_retry = 3
+        for attempt in range(max_retry):
+            response = call_llm(payload)
+            if not response:
+                return {"reasoning": "", "revised_sql": "", "raw": ""}
+            else:
+                result = self._parse_critique_sql_response(response[1])
+                if not self.format_correct(result["revised_sql"]):
+                    return {"reasoning": "", "revised_sql": "", "raw": ""}
+                return result
 
     def _parse_critique_sql_response(self, response: str) -> dict:
         """
