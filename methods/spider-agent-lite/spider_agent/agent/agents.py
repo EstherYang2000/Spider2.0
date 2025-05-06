@@ -9,7 +9,7 @@ from http import HTTPStatus
 from io import BytesIO
 from typing import Dict, List
 from spider_agent.agent.prompts import BIGQUERY_SYSTEM, LOCAL_SYSTEM, DBT_SYSTEM, SNOWFLAKE_SYSTEM, REFERENCE_PLAN_SYSTEM,EXTERNAL_KNOWLEDGE_SYSTEM
-from spider_agent.agent.action import Action, Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS
+from spider_agent.agent.action import Action, Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS,SF_GET_TABLES, SF_GET_TABLE_INFO, SF_SAMPLE_ROWS,LOCAL_GET_TABLES, LOCAL_GET_TABLE_INFO, LOCAL_SAMPLE_ROWS
 from spider_agent.envs.spider_agent import Spider_Agent_Env
 from spider_agent.agent.models import call_llm
 
@@ -18,7 +18,6 @@ from openai import AzureOpenAI
 from typing import Dict, List, Optional, Tuple, Any, TypedDict
 
 from spider_agent.agent.rag_action import RAG_QUERY
-from spider_agent.agent.schema_link_agent import SchemaLinkAgent  # <-- 新增
 from spider_agent.agent.schema_agent import SchemaAgent, SchemaAgentEnv
 
 
@@ -65,7 +64,8 @@ class PromptAgent:
         use_plan=False,
         use_schema_linking=False,
         env=None,
-        llm_predict=None
+        llm_predict=None,
+        schema_link_mode="sql"
     ):
         
         self.model = model
@@ -90,6 +90,7 @@ class PromptAgent:
         self.schema_retriever = None  # 兩階段 schema 檢索器（延遲初始化）
         self.dialect = None
         self.schema_string = None
+        self.schema_link_mode = schema_link_mode
         # --- 初始化 schema_agent ---
         self.schema_agent_env = None
         if llm_predict is None:
@@ -101,20 +102,25 @@ class PromptAgent:
         for root, dirs, files in os.walk(example_dir):
             for file in files:
                 if file.lower() == "ddl.csv" and db in root:
-                    return (os.path.join(root, file), root)
+                    return (os.path.join(root, file), root,dirs)
+        return None
+    def find_ddl_folder_name(self, example_dir, db):
+        for root, dirs, files in os.walk(example_dir):
+            for file in files:
+                if file.lower() == "ddl.csv" and db in root:
+                    return os.path.basename(root)  # 只回傳資料夾名
         return None
     def generate_reference_plan(self):
         from spider_agent.agent.planner_critique_agents import PlannerAgent
         if self.planner_agent is None:
             self.planner_agent = PlannerAgent(model=self.model)
-        if not self.reference_plan:
-            question = self.env.task_config.get('question', '')
-            schema_string = self.env.task_config.get('schema', '')
-            evidence = self.env.task_config.get('evidence', '')
-            self.reference_plan = self.planner_agent.generate_plan(
-                question=question,
-                schema_string=schema_string,
-                evidence=evidence
+        question = self.env.task_config.get('question', '')
+        schema_string = self.env.task_config.get('schema', '')
+        evidence = self.env.task_config.get('evidence', '')
+        self.reference_plan = self.planner_agent.generate_plan(
+            question=question,
+            schema_string=schema_string,
+            evidence=evidence
             )
         logger.info(f"[MCP] Generated Plan: {self.reference_plan}")   
     def set_env_and_task(self, env: Spider_Agent_Env):
@@ -148,15 +154,15 @@ class PromptAgent:
 
             
         if self.env.task_config['type'] == 'Bigquery':
-            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, BIGQUERY_EXEC_SQL, CreateFile, EditFile]
+            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, BIGQUERY_EXEC_SQL, CreateFile, EditFile, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = BIGQUERY_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
         elif self.env.task_config['type'] == 'Snowflake':
-            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, SNOWFLAKE_EXEC_SQL, CreateFile, EditFile]
+            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, SNOWFLAKE_EXEC_SQL, CreateFile, EditFile, SF_GET_TABLES, SF_GET_TABLE_INFO, SF_SAMPLE_ROWS]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = SNOWFLAKE_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
         elif self.env.task_config['type'] == 'Local':
-            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL]
+            self._AVAILABLE_ACTION_CLASSES = [Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL,LOCAL_GET_TABLES, LOCAL_GET_TABLE_INFO, LOCAL_SAMPLE_ROWS]
             action_space = "".join([action_cls.get_action_description() for action_cls in self._AVAILABLE_ACTION_CLASSES])
             self.system_message = LOCAL_SYSTEM.format(work_dir=self.work_dir, action_space=action_space, task=self.instruction, max_steps=self.max_steps)
         elif self.env.task_config['type'] == 'DBT':
@@ -197,11 +203,18 @@ class PromptAgent:
             #     logger.warning(f"[Auto Schema] Failed to generate schema string: {e}")
             # 自動補 schema（如果還沒 schema）
                     # --- 初始化 schema_agent ---
-            self.schema_agent_env = SchemaAgentEnv(base_dir=self.env.mnt_dir)
-            self.schema_agent = SchemaAgent(self.schema_agent_env, llm_predict=self.predict)
+
+
             if not self.schema_string:
                 logger.info("[MCP] No schema found, invoking SchemaAgent to generate schema...")
-                
+                if self.schema_link_mode == "file":
+                    self.schema_agent_env = SchemaAgentEnv(base_dir=self.env.mnt_dir)
+                    self.schema_agent = SchemaAgent(self.schema_agent_env, llm_predict=self.predict)
+                else:
+                    from spider_agent.agent.database_schema_agent import DBSchemaAgentEnv, SQLSchemaLinkingAgent
+                    folder_name = self.find_ddl_folder_name(self.env.mnt_dir, self.env.task_config.get('db'))
+                    self.schema_agent_env = DBSchemaAgentEnv(base_dir=self.env.mnt_dir,schema_path=folder_name)
+                    self.schema_agent = SQLSchemaLinkingAgent(self.schema_agent_env, llm_predict=self.predict, llm_step=self.env.step,db_type=self.dialect,db_name=self.env.task_config.get('db'))
                 self.schema_string = self.schema_agent.run(
                     user_question=self.env.task_config.get('question', self.instruction),
                     critique_note=None  # 第一次通常沒有 critique
@@ -275,8 +288,8 @@ class PromptAgent:
                     self.history_messages = [self.history_messages[0]] + self.history_messages[3:]
                 else:
                     raise Exception(f"Failed to call LLM, response: {response}")
-            
-
+        logger.info("Response: %s", response)
+        thought = None
         try:
             action = self.parse_action(response)
             thought = re.search(r'Thought:(.*?)Action', response, flags=re.DOTALL)
@@ -383,7 +396,7 @@ class PromptAgent:
                 if action is not None:
                     output_action = action
                     break
-        logger.info("Parsed action: %s", output_action)
+        # logger.info("Parsed action: %s", output_action)
         return output_action
 
     

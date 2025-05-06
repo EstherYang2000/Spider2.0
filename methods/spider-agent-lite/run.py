@@ -87,8 +87,9 @@ def config() -> argparse.Namespace:
     parser.add_argument("--rag_syntax", action="store_true", help="Enable RAG syntax for self-refinement")
 
     # Schema linking toggle
-    parser.add_argument('--use_schema_linking', action='store_true', default=False, help='是否啟用 schema linking (預設True)')
-
+    parser.add_argument('--use_schema_linking', action='store_true', default=False, help='是否啟用 schema linking (False by default)')
+    parser.add_argument('--schema_link_mode', choices=['file', 'sql'], default='file', help='Choose schema linking mode: "file" (use DDL or schema files) or "sql" (use database exploration).')
+    parser.add_argument('--validate_result', action='store_true', default=False, help='use validate_result to check answer (False by default)')
     args = parser.parse_args()
 
     return args
@@ -145,7 +146,9 @@ def test(
             use_plan=args.plan,
             max_refinement_iterations=args.max_refinement_iterations,
             rag_syntax=args.rag_syntax,
-            use_schema_linking=args.use_schema_linking
+            use_schema_linking=args.use_schema_linking,
+            schema_link_mode=args.schema_link_mode,
+            validate_result=args.validate_result
         )
     else:
         agent = PromptAgent(
@@ -294,5 +297,9 @@ python run.py --model grok-3-beta -s test7 --example_index 11-20 --self_refineme
 python run.py --model o4-mini-2025-04-16 -s test3_wo_sl --example_index 11-20 --self_refinement --plan --rag_syntax --use_schema_linking
 python run.py --model grok-3-beta -s test12 --example_index 0-10 --self_refinement --plan --use_schema_linking
 python run.py --model gemini-2.5-pro-preview-03-25 -s test8 --example_index 0-5 --self_refinement --plan --use_schema_linking
+python run.py --model gpt-4.1-2025-04-14 -s test2 --example_index 10-20 --self_refinement --plan --use_schema_linking --overwriting --validate_result
+python run.py --model grok-3-beta -s test17 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result
+python run.py --model gemini-2.5-pro-preview-03-25 -s test10 --example_index 0-1 --self_refinement --plan --use_schema_linking --overwriting --validate_result --schema_link_mode sql
+python run.py --model o4-mini-2025-04-16 -s test7 --example_index 10-15 --self_refinement --plan --rag_syntax --validate_result
 
 """

@@ -227,3 +227,141 @@ output_path = "{output_path}"# Path to save the output as a CSV or "directly"
 
 execute_sql(file_path, command, output_path)
 """
+SF_GET_TABLES_TEMPLATE = """
+`    import snowflake.connector
+    import json
+    import pandas as pd
+
+    conn = snowflake.connector.connect(**json.load(open("/workspace/snowflake_credential.json")))
+    cursor = conn.cursor()
+    cursor.execute(f\"\"\"
+        SELECT table_name
+        FROM {schema_name}.information_schema.tables
+        WHERE table_schema = '{schema_name}'
+    \"\"\")
+    results = cursor.fetchall()
+    df = pd.DataFrame(results, columns=['table_name'])
+    df.to_csv("{save_path}", index=False)
+    cursor.close()
+    conn.close()
+    print(f"Tables saved to {save_path}")
+
+"""
+
+SF_GET_TABLE_INFO_TEMPLATE = """
+import snowflake.connector
+import json
+import pandas as pd
+
+conn = snowflake.connector.connect(**json.load(open("/workspace/snowflake_credential.json")))
+cursor = conn.cursor()
+cursor.execute(f\"\"\"
+    DESC TABLE {schema_name}.{table}
+\"\"\")
+results = cursor.fetchall()
+df = pd.DataFrame(results, columns=['name', 'type', 'kind', 'null?', 'default', 'primary key', 'unique key', 'check', 'expression', 'comment'])
+df.to_csv("{save_path}", index=False)
+cursor.close()
+conn.close()
+print(f"Table info saved to {save_path}")
+"""
+
+SF_SAMPLE_ROWS_TEMPLATE = """
+import snowflake.connector
+import json
+import pandas as pd
+
+conn = snowflake.connector.connect(**json.load(open("/workspace/snowflake_credential.json")))
+cursor = conn.cursor()
+cursor.execute(f"SELECT * FROM {schema_name}.{table} LIMIT {row_number}")
+results = cursor.fetchall()
+columns = [desc[0] for desc in cursor.description]
+df = pd.DataFrame(results, columns=columns)
+df.to_json("{save_path}", orient='records', indent=4)
+cursor.close()
+conn.close()
+print(f"Sample rows saved to {save_path}")
+"""
+
+LOCAL_GET_TABLES_TEMPLATE = """
+import sqlite3
+import duckdb
+import os
+import pandas as pd
+
+def detect_db_type(file_path):
+    if file_path.endswith(".duckdb"):
+        return 'duckdb'
+    return 'sqlite'
+
+db_type = detect_db_type("{file_path}")
+if db_type == 'sqlite':
+    conn = sqlite3.connect("{file_path}")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = cursor.fetchall()
+    df = pd.DataFrame(tables, columns=['table_name'])
+    df.to_csv("{save_path}", index=False)
+    conn.close()
+elif db_type == 'duckdb':
+    conn = duckdb.connect("{file_path}")
+    tables = conn.execute("SHOW TABLES").fetchall()
+    df = pd.DataFrame(tables, columns=['table_name'])
+    df.to_csv("{save_path}", index=False)
+    conn.close()
+print(f"Tables saved to {save_path}")
+"""
+
+LOCAL_GET_TABLE_INFO_TEMPLATE = """
+import sqlite3
+import duckdb
+import os
+import pandas as pd
+
+def detect_db_type(file_path):
+    if file_path.endswith(".duckdb"):
+        return 'duckdb'
+    return 'sqlite'
+
+db_type = detect_db_type("{file_path}")
+if db_type == 'sqlite':
+    conn = sqlite3.connect("{file_path}")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info({table})")
+    columns = cursor.fetchall()
+    df = pd.DataFrame(columns, columns=['cid', 'name', 'type', 'notnull', 'dflt_value', 'pk'])
+    df.to_csv("{save_path}", index=False)
+    conn.close()
+elif db_type == 'duckdb':
+    conn = duckdb.connect("{file_path}")
+    df = conn.execute("DESCRIBE {table}").fetchdf()
+    df.to_csv("{save_path}", index=False)
+    conn.close()
+print(f"Table info saved to {save_path}")
+"""
+
+LOCAL_SAMPLE_ROWS_TEMPLATE = """
+import sqlite3
+import duckdb
+import os
+import pandas as pd
+import json
+
+def detect_db_type(file_path):
+    if file_path.endswith(".duckdb"):
+        return 'duckdb'
+    return 'sqlite'
+
+db_type = detect_db_type("{file_path}")
+if db_type == 'sqlite':
+    conn = sqlite3.connect("{file_path}")
+    df = pd.read_sql_query("SELECT * FROM {table} LIMIT {row_number}", conn)
+    conn.close()
+elif db_type == 'duckdb':
+    conn = duckdb.connect("{file_path}")
+    df = conn.execute("SELECT * FROM {table} LIMIT {row_number}").fetchdf()
+    conn.close()
+with open("{save_path}", "w") as f:
+    json.dump(df.to_dict(orient="records"), f, indent=4)
+print(f"Sample rows saved to {save_path}")
+"""

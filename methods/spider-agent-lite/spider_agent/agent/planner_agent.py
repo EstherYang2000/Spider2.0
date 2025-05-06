@@ -48,14 +48,16 @@ class PlannerAgent:
             "<column1> (type)\n"
             "[Add notes such as \"answer in one row\" if applicable.]\n"
         )
+        logger.info(f"[MCP] Generate Reference Plan Prompt: {prompt}")
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         }
-        logger.info("Calling LLM for plan and expected CSV format generation...")
+        logger.info("Calling LLM for Reference Plan and Expected CSV format generation...")
         _, response = call_llm(payload)
+        logger.info(f"[MCP] Reference Plan and Expected CSV format: {response}")
         # 解析 LLM 回傳，把 Plan 跟 Expected CSV format 分開
         if "Expected CSV format:" in response:
             plan, expected_csv_format = response.split("Expected CSV format:", 1)

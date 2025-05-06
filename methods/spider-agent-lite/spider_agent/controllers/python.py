@@ -8,7 +8,7 @@ import os
 import ast
 import tempfile
 import platform
-from spider_agent.agent.sql_template import LOCAL_SQL_TEMPLATE, BQ_GET_TABLES_TEMPLATE, BQ_GET_TABLE_INFO_TEMPLATE, BQ_SAMPLE_ROWS_TEMPLATE, BQ_EXEC_SQL_QUERY_TEMPLATE, SF_EXEC_SQL_QUERY_TEMPLATE
+from spider_agent.agent.sql_template import LOCAL_SQL_TEMPLATE, BQ_GET_TABLES_TEMPLATE, BQ_GET_TABLE_INFO_TEMPLATE, BQ_SAMPLE_ROWS_TEMPLATE, BQ_EXEC_SQL_QUERY_TEMPLATE, SF_GET_TABLES_TEMPLATE, SF_GET_TABLE_INFO_TEMPLATE, SF_SAMPLE_ROWS_TEMPLATE, SF_EXEC_SQL_QUERY_TEMPLATE
 logger = logging.getLogger("spider_agent.pycontroller")
 
 
@@ -187,7 +187,55 @@ class PythonController:
         return observation
 
     
-    
+    def execute_sf_get_tables(self, action):
+        database_name, schema_name, save_path = action.database_name, action.schema_name, action.save_path
+        script_content = SF_GET_TABLES_TEMPLATE.format(database_name=database_name, schema_name=schema_name, save_path=save_path)
+        temp_file_path = "temp_sf_tables.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+
+    def execute_sf_get_table_info(self, action):
+        database_name, schema_name, table, save_path = action.database_name, action.schema_name, action.table, action.save_path
+        script_content = SF_GET_TABLE_INFO_TEMPLATE.format(
+            database_name=database_name, schema_name=schema_name, table=table, save_path=save_path)
+        temp_file_path = "temp_sf_info.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+
+    def execute_sf_sample_rows(self, action):
+        database_name, schema_name, table, row_number, save_path = action.database_name, action.schema_name, action.table, action.row_number, action.save_path
+        script_content = SF_SAMPLE_ROWS_TEMPLATE.format(
+            database_name=database_name, schema_name=schema_name, table=table, row_number=row_number, save_path=save_path)
+        temp_file_path = "temp_sf_sample.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+    def execute_local_get_tables(self, action):
+        file_path, save_path = action.file_path, action.save_path
+        script_content = LOCAL_GET_TABLES_TEMPLATE.format(file_path=file_path, save_path=save_path)
+        temp_file_path = "temp_local_tables.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+
+    def execute_local_get_table_info(self, action):
+        file_path, table, save_path = action.file_path, action.table, action.save_path
+        script_content = LOCAL_GET_TABLE_INFO_TEMPLATE.format(file_path=file_path, table=table, save_path=save_path)
+        temp_file_path = "temp_local_info.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+
+    def execute_local_sample_rows(self, action):
+        file_path, table, row_number, save_path = action.file_path, action.table, action.row_number, action.save_path
+        script_content = LOCAL_SAMPLE_ROWS_TEMPLATE.format(file_path=file_path, table=table, row_number=row_number, save_path=save_path)
+        temp_file_path = "temp_local_sample.py"
+        observation = self.execute_python_file(temp_file_path, script_content)
+        self.execute_command(f"rm {temp_file_path}")
+        return observation
+
     
     def create_file(self, file_path: str, content: str):
         escaped_content = content.replace('"', '\\"').replace('`', '\\`').replace('$', '\\$')

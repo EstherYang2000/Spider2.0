@@ -45,7 +45,7 @@ class CritiqueAgent:
             r'LOCAL_DB_SQL\(file_path=(.*?), command=(.*?), output=(.*?)\)'
             ]
         for pattern in pattern_list:
-            if re.search(pattern, response, re.DOTALL):
+            if re.search(pattern, response, re.DOTALL|re.VERBOSE):
                 return True
         return False
     def __init__(self, model="gpt-4", max_tokens=800, temperature=0.3):
@@ -106,6 +106,7 @@ class CritiqueAgent:
         prompt_prefix: str = "",
         rewrite_only: bool = False
     ) -> dict:
+        prompt = None
         if rewrite_only:
             prompt = (
                 f"{prompt_prefix}\n"
@@ -119,7 +120,7 @@ class CritiqueAgent:
                 "Respond in two sections:\n"
                 "[Reasoning]\nExplain your critique and what needs fixing.\n"
                 "[SQL]\nOutput the corrected SQL using this format:\n"
-                "Action: BIGQUERY_EXEC_SQL(sql_query=\"...\")\n\n"
+                "Action: BIGQUERY_EXEC_SQL(sql_query=\"...\")\n\n or Action: SNOWFLAKE_EXEC_SQL(sql_query=\"...\")\n\n or Action: LOCAL_DB_SQL(file_path=\"...\", command=\"...\", output=\"...\")\n\n"
                 f"User Question: {question}\n"
                 f"Schema:\n{schema_string}\n"
                 f"Plan:\n{plan}\n"
@@ -141,12 +142,14 @@ class CritiqueAgent:
         max_retry = 3
         for attempt in range(max_retry):
             response = call_llm(payload)
+            logger.info(f"[CritiqueAgent] Attempt {attempt + 1} to critique SQL: {sql_query}")
             if not response:
                 return {"reasoning": "", "revised_sql": "", "raw": ""}
             else:
                 result = self._parse_critique_sql_response(response[1])
-                if not self.format_correct(result["revised_sql"]):
-                    return {"reasoning": "", "revised_sql": "", "raw": ""}
+                # if not self.format_correct(result["revised_sql"]):
+                #     logger.info("[CritiqueAgent] Failed to format revised SQL, try again.")
+                #     return {"reasoning": "", "revised_sql": "", "raw": ""}
                 return result
 
     def _parse_critique_sql_response(self, response: str) -> dict:
@@ -196,8 +199,8 @@ class CritiqueAgent:
             # "raw": response.strip()
         }
 
-# if __name__ == "__main__":
-#     test ="""[Reasoning]\nThe provided SQL query has a solid foundation but requires several critiques and improvements for correctness, efficiency, and alignment with the schema and user requirements. Below are the key points of critique and areas for improvement:\n\n1. **Schema Assumptions**: The query assumes the existence of fields like `hits.product.v2ProductName` and `hits.product.productQuantity` in the `bigquery-public-data.google_analytics_sample.ga_sessions_*` dataset. While the evidence provided in the user input lists fields like `hits.product.productQuantity` and `hits.product.productSKU`, it’s unclear if `v2ProductName` is the correct field for identifying the product name. If this field does not exist or is named differently (e.g., `productName`), the query will fail. I will adjust to use a more generic or confirmed field if necessary, but for now, I\'ll retain it based on the user\'s query.\n\n2. **Date Filtering with `_TABLE_SUFFIX`**: The query uses `_TABLE_SUFFIX BETWEEN \'20170701\' AND \'20170731\'` to filter for July 2017 data. This is correct for BigQuery\'s Google Analytics sample dataset, as it partitions data by date in the table suffix. However, it’s worth noting that this assumes the dataset structure matches the expected format. I will retain this approach as it aligns with the provided schema snippet.\n\n3. **Nested UNNEST Operations**: The query uses `CROSS JOIN UNNEST(hits) AS h` and `CROSS JOIN UNNEST(h.product) AS p` to access nested data. This is appropriate for the Google Analytics dataset structure, where `hits` and `hits.product` are nested arrays. However, it can lead to performance issues with large datasets due to the explosion of rows. I will keep this structure but note that optimization (e.g., filtering before UNNEST) could be considered if performance is a concern.\n\n4. **Exclusion of Target Product**: The query correctly excludes \'Youtube Men’s Vintage Henley\' using `p.v2ProductName != \'Youtube Men’s Vintage Henley\'` in the `OtherProducts` CTE. This is logically sound and aligns with the user’s requirement.\n\n5. **Aggregation and Sorting**: The query aggregates the total quantity sold using `SUM(p.productQuantity)` and sorts by `total_quantity DESC` to find the top-selling product, limiting to 1 result. This is correct, but it does not handle ties (e.g., if two products have the same total quantity). I will adjust the query to include a secondary sort criterion (e.g., alphabetical order of product name) to break ties deterministically.\n\n6. **Edge Cases**: The query does not account for scenarios where no other products are purchased by the target customers. While the `LIMIT 1` ensures a result is returned if data exists, it could return an empty result set if no qualifying data is found. I will not modify this behavior as it aligns with the expected output format, but it’s worth noting.\n\n7. **Readability and Maintainability**: The query is structured with CTEs (`HenleyBuyers` and `OtherProducts`), which improves readability. However, adding comments and consistent aliasing can further enhance clarity.\n\nIn summary, the query is mostly correct but relies on unverified schema assumptions (e.g., `v2ProductName`), lacks handling for ties in top-selling products, and could be optimized for performance. I will revise the query to address the tie-breaking issue and improve readability while retaining the core logic.\n\n[SQL]\nAction: BIGQUERY_EXEC_SQL(sql_query="\nWITH HenleyBuyers AS (\n  -- Identify unique customers who bought \'Youtube Men’s Vintage Henley\' in July 2017\n  SELECT DISTINCT fullVisitorId\n  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`\n  CROSS JOIN UNNEST(hits) AS h\n  CROSS JOIN UNNEST(h.product) AS p'"""
-#     agent = CritiqueAgent()
-#     result = agent._parse_critique_sql_response(test)
-#     print(result)
+    if __name__ == "__main__":
+        test ="""BIGQUERY_EXEC_SQL(sql_query="WITH TopSource AS (SELECT trafficSource.source AS top_source FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*` WHERE _TABLE_SUFFIX BETWEEN '20170101' AND '20171231' GROUP BY trafficSource.source ORDER BY SUM(totals.totalTransactionRevenue) DESC LIMIT 1) SELECT t.top_source, EXTRACT(MONTH FROM PARSE_DATE('%Y%m%d', _TABLE_SUFFIX)) AS month, SUM(totals.totalTransactionRevenue) / 1000000.0 AS monthly_revenue_millions FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`, TopSource t WHERE _TABLE_SUFFIX BETWEEN '20170101' AND '20171231' AND trafficSource.source = t.top_source GROUP BY t.top_source, month ORDER BY month", is_save=True, save_path="/workspace/monthly_revenue_top_source.csv")"""
+        agent = CritiqueAgent()
+        result = agent.format_correct(test)
+        print(result)

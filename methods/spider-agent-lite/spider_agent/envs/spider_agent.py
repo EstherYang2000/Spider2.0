@@ -15,7 +15,7 @@ from spider_agent.controllers.python import PythonController
 from spider_agent.controllers.setup import SetupController
 from spider_agent.envs.utils import *
 from spider_agent import configs
-from spider_agent.agent.action import Action, Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL, BIGQUERY_EXEC_SQL, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS, SNOWFLAKE_EXEC_SQL
+from spider_agent.agent.action import Action, Bash, Terminate, CreateFile, EditFile, LOCAL_DB_SQL, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, BQ_GET_TABLES, BQ_GET_TABLE_INFO, BQ_SAMPLE_ROWS,SF_GET_TABLES, SF_GET_TABLE_INFO, SF_SAMPLE_ROWS,LOCAL_GET_TABLES, LOCAL_GET_TABLE_INFO, LOCAL_SAMPLE_ROWS
 import signal
 import sys
 
@@ -216,8 +216,20 @@ class Spider_Agent_Env(gym.Env):
                     observation = self.controller.execute_bq_exec_sql_query(action)
                 elif isinstance(action, SNOWFLAKE_EXEC_SQL):
                     observation = self.controller.execute_sf_exec_sql_query(action)
+                elif isinstance(action, SF_GET_TABLES):
+                    observation = self.controller.execute_sf_get_tables(action)
+                elif isinstance(action, SF_GET_TABLE_INFO):
+                    observation = self.controller.execute_sf_get_table_info(action)
+                elif isinstance(action, SF_SAMPLE_ROWS):
+                    observation = self.controller.execute_sf_sample_rows(action)
                 elif isinstance(action, LOCAL_DB_SQL):
                     observation = self.execute_sql_action(action)
+                elif isinstance(action, LOCAL_GET_TABLES):
+                    observation = self.controller.execute_local_get_tables(action)
+                elif isinstance(action, LOCAL_GET_TABLE_INFO):
+                    observation = self.controller.execute_local_get_table_info(action)
+                elif isinstance(action, LOCAL_SAMPLE_ROWS):
+                    observation = self.controller.execute_local_sample_rows(action)
                 elif isinstance(action, CreateFile):
                     observation = self.create_file_action(action)
                 elif isinstance(action, EditFile):

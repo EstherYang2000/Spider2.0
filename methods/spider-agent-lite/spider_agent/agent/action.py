@@ -339,18 +339,23 @@ class BQ_GET_TABLES(Action):
     def get_action_description(cls) -> str:
         return """
 ## GET_TABLES Action
-* Signature: GET_TABLES(database_name="your_database_name", dataset_name="your_dataset_name", save_path="path/to/output_file.csv")
+* Signature: BQ_GET_TABLES(database_name="your_database_name", dataset_name="your_dataset_name", save_path="path/to/output_file.csv")
 * Description: Executes a query to fetch all table names and their corresponding DDL from the specified dataset in Google Cloud BigQuery. The results are saved to the specified CSV file.
   - The BigQuery id of a table is usually in the form of database_name.dataset_name.table_name. This action mainly focuses on the tables under dataset_name.
 * Examples:
-  - Example1: GET_TABLES(database_name="bigquery-public-data", dataset_name="new_york", save_path="dataset_metadata.csv")
+  - Example1: BQ_GET_TABLES(database_name="bigquery-public-data", dataset_name="new_york", save_path="dataset_metadata.csv")
 """
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'GET_TABLES\(database_name=(.*?), dataset_name=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
-        if matches:
-            database_name, dataset_name, save_path = (item.strip() for item in matches[-1])
-            return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), save_path=remove_quote(save_path))
+        pattern = [
+            r'BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?), save_path=(.*?)\)',
+            r'BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?)\)'
+        ]
+        for p in pattern:
+            matches = re.findall(p, text, flags=re.DOTALL)
+            if matches:
+                database_name, dataset_name, save_path = (item.strip() for item in matches[-1])
+                return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), save_path=remove_quote(save_path))
         return None
 
     def __repr__(self) -> str:
@@ -374,15 +379,15 @@ class BQ_GET_TABLE_INFO(Action):
     def get_action_description(cls) -> str:
         return """
 ## GET_TABLE_INFO Action
-* Signature: GET_TABLE_INFO(database_name="your_database_name", dataset_name="your_dataset_name", table="table_name", save_path="path/to/output_file.csv")
+* Signature: BQ_GET_TABLE_INFO(database_name="your_database_name", dataset_name="your_dataset_name", table="table_name", save_path="path/to/output_file.csv")
 * Description: Executes a query to fetch all column information (field path, data type, and description) from the specified table in the dataset in Google Cloud BigQuery. The results are saved to the specified CSV file.
  - The BigQuery id of a table is usually in the form of database_name.dataset_name.table_name.
 * Examples:
-  - Example1: GET_TABLE_INFO(database_name="bigquery-public-data", dataset_name="samples", table="shakespeare", save_path="shakespeare_info.csv")
+  - Example1: BQ_GET_TABLE_INFO(database_name="bigquery-public-data", dataset_name="samples", table="shakespeare", save_path="shakespeare_info.csv")
 """
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'GET_TABLE_INFO\(database_name=(.*?), dataset_name=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(r'BQ_GET_TABLE_INFO\(database_name=(.*?), dataset_name=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
         if matches:
             database_name, dataset_name, table, save_path = (item.strip() for item in matches[-1])
             return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), table=remove_quote(table), save_path=remove_quote(save_path))
@@ -427,7 +432,111 @@ class BQ_SAMPLE_ROWS(Action):
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(database_name="{self.database_name}", dataset_name="{self.dataset_name}", table="{self.table}", row_number={self.row_number}, save_path="{self.save_path}")'
     
+@dataclass
+class SF_GET_TABLES(Action):
+    action_type: str = field(default="sf_get_tables", init=False, repr=False)
+    database_name: str = field(metadata={"help": "Snowflake database name"})
+    schema_name: str = field(metadata={"help": "Snowflake schema name"})
+    save_path: str = field(metadata={"help": "Output path for table metadata"})
 
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'SF_GET_TABLES\(database_name=(.*?), schema_name=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            db, schema, path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(database_name=db, schema_name=schema, save_path=path)
+        return None
+
+    def __repr__(self):
+        return f"SF_GET_TABLES(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", save_path=\"{self.save_path}\")"
+@dataclass
+class SF_GET_TABLE_INFO(Action):
+    action_type: str = field(default="sf_get_table_info", init=False, repr=False)
+    database_name: str = field(metadata={"help": "Snowflake database name"})
+    schema_name: str = field(metadata={"help": "Snowflake schema name"})
+    table: str = field(metadata={"help": "Table name"})
+    save_path: str = field(metadata={"help": "Output path for schema metadata"})
+
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'SF_GET_TABLE_INFO\(database_name=(.*?), schema_name=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            db, schema, table, path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(database_name=db, schema_name=schema, table=table, save_path=path)
+        return None
+
+    def __repr__(self):
+        return f"SF_GET_TABLE_INFO(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", table=\"{self.table}\", save_path=\"{self.save_path}\")"
+@dataclass
+class SF_SAMPLE_ROWS(Action):
+    action_type: str = field(default="sf_sample_rows", init=False, repr=False)
+    database_name: str = field(metadata={"help": "Snowflake database name"})
+    schema_name: str = field(metadata={"help": "Snowflake schema name"})
+    table: str = field(metadata={"help": "Table name"})
+    row_number: int = field(metadata={"help": "Number of rows to sample"})
+    save_path: str = field(metadata={"help": "Output path for sample data"})
+
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'SF_SAMPLE_ROWS\(database_name=(.*?), schema_name=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            db, schema, table, row_num, path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(database_name=db, schema_name=schema, table=table, row_number=int(row_num), save_path=path)
+        return None
+
+    def __repr__(self):
+        return f"SF_SAMPLE_ROWS(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", table=\"{self.table}\", row_number={self.row_number}, save_path=\"{self.save_path}\")"
+@dataclass
+class LOCAL_GET_TABLES(Action):
+    action_type: str = field(default="local_get_tables", init=False, repr=False)
+    file_path: str = field(metadata={"help": "Path to local DB file"})
+    save_path: str = field(metadata={"help": "Output path for tables info"})
+
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'LOCAL_GET_TABLES\(file_path=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            file_path, save_path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(file_path=file_path, save_path=save_path)
+        return None
+
+    def __repr__(self):
+        return f"LOCAL_GET_TABLES(file_path=\"{self.file_path}\", save_path=\"{self.save_path}\")"
+@dataclass
+class LOCAL_GET_TABLE_INFO(Action):
+    action_type: str = field(default="local_get_table_info", init=False, repr=False)
+    file_path: str = field(metadata={"help": "Path to local DB file"})
+    table: str = field(metadata={"help": "Table name"})
+    save_path: str = field(metadata={"help": "Output path for schema info"})
+
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'LOCAL_GET_TABLE_INFO\(file_path=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            file_path, table, save_path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(file_path=file_path, table=table, save_path=save_path)
+        return None
+
+    def __repr__(self):
+        return f"LOCAL_GET_TABLE_INFO(file_path=\"{self.file_path}\", table=\"{self.table}\", save_path=\"{self.save_path}\")"
+@dataclass
+class LOCAL_SAMPLE_ROWS(Action):
+    action_type: str = field(default="local_sample_rows", init=False, repr=False)
+    file_path: str = field(metadata={"help": "Path to local DB file"})
+    table: str = field(metadata={"help": "Table name"})
+    row_number: int = field(metadata={"help": "Number of rows to sample"})
+    save_path: str = field(metadata={"help": "Output path for sample data"})
+
+    @classmethod
+    def parse_action_from_text(cls, text: str) -> Optional[Action]:
+        matches = re.findall(r'LOCAL_SAMPLE_ROWS\(file_path=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        if matches:
+            file_path, table, row_number, save_path = [remove_quote(v.strip()) for v in matches[-1]]
+            return cls(file_path=file_path, table=table, row_number=int(row_number), save_path=save_path)
+        return None
+
+    def __repr__(self):
+        return f"LOCAL_SAMPLE_ROWS(file_path=\"{self.file_path}\", table=\"{self.table}\", row_number={self.row_number}, save_path=\"{self.save_path}\")"
 
 @dataclass
 class Terminate(Action):

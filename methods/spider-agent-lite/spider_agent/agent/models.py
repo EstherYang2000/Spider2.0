@@ -139,72 +139,125 @@ def call_llm(payload):
         
     elif model.startswith("claude"):
         messages = payload["messages"]
-        max_tokens = payload["max_tokens"]
-        top_p = payload["top_p"]
-        temperature = payload["temperature"]
-
-        gemini_messages = []
-
-        for i, message in enumerate(messages):
-            gemini_message = {
-                "role": message["role"],
-                "content": []
-            }
-            assert len(message["content"]) in [1, 2], "One text, or one text with one image"
-            for part in message["content"]:
-
-                if part['type'] == "image_url":
-                    image_source = {}
-                    image_source["type"] = "base64"
-                    image_source["media_type"] = "image/png"
-                    image_source["data"] = part['image_url']['url'].replace("data:image/png;base64,", "")
-                    gemini_message['content'].append({"type": "image", "source": image_source})
-
-                if part['type'] == "text":
-                    gemini_message['content'].append({"type": "text", "text": part['text']})
-
-            gemini_messages.append(gemini_message)
+        max_tokens = payload.get("max_tokens", 4096)
+        temperature = payload.get("temperature", 1.0)
+        top_p = payload.get("top_p", 0.7)
         
-        if gemini_messages[0]['role'] == "system":
-            gemini_system_message_item = gemini_messages[0]['content'][0]
-            gemini_messages[1]['content'].insert(0, gemini_system_message_item)
-            gemini_messages.pop(0)
-
-
+        # Convert to Claude's message format
+        claude_messages = []
+        
+        # Handle system message if present
+        system_content = None
+        if messages and messages[0]["role"] == "system":
+            system_content = ""
+            for part in messages[0]["content"]:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    system_content += part["text"]
+                elif isinstance(part, str):
+                    system_content += part
+            messages = messages[1:]  # Remove system message from regular messages
+        
+        # Process regular messages
+        for message in messages:
+            role = message["role"]
+            message_content = []
+            
+            # Handle content which might be a list of parts or a string
+            content = message["content"]
+            if isinstance(content, str):
+                # Convert string content to text part
+                message_content.append({"type": "text", "text": content})
+            else:
+                # Process list of content parts
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            message_content.append({"type": "text", "text": part["text"]})
+                        elif part.get("type") == "image_url":
+                            # Handle image data - convert to Claude's image format
+                            image_url = part["image_url"]["url"]
+                            if image_url.startswith("data:image/"):
+                                # Extract base64 data
+                                media_type = image_url.split(";")[0].replace("data:", "")
+                                base64_data = image_url.split(",")[1]
+                                
+                                message_content.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": base64_data
+                                    }
+                                })
+                    elif isinstance(part, str):
+                        # Handle plain string content
+                        message_content.append({"type": "text", "text": part})
+            
+            claude_messages.append({
+                "role": role,
+                "content": message_content
+            })
+        
+        # Prepare the request payload for Claude API
+        claude_payload = {
+            "model": model,
+            "messages": claude_messages,
+            "max_tokens": max_tokens,
+            # "temperature": temperature,
+            # "top_p": top_p
+        }
+        
+        # Add system prompt if present
+        if system_content:
+            claude_payload["system"] = system_content
+        
         headers = {
             'Accept': 'application/json',
-            'Authorization': f'Bearer {os.environ["GEMINI_API_KEY"]}',
-            'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
+            'Anthropic-Version': 'messages-2023-06-01',
+            'Anthropic-Beta': 'messages-2023-12-15',
+            'Authorization': f'Bearer {os.environ["ANTHROPIC_API_KEY"]}',
             'Content-Type': 'application/json'
-        }  
+        }
         
-        payload = json.dumps({"model": model,"messages": gemini_messages,"max_tokens": max_tokens,"temperature": temperature,"top_p": top_p})
-
-
-        
+        # Make the API request with retries
         for i in range(3):
             try:
-                response = requests.request("POST", "https://api2.aigcbest.top/v1/chat/completions", headers=headers, data=payload)
-                logger.info(f"response_code {response.status_code}")
+                logger.info(f"Calling Claude API with model: {model}")
+                response = requests.post("https://api.anthropic.com/v1/messages", 
+                                headers=headers, 
+                                json=claude_payload)
+                
                 if response.status_code == 200:
-                    return True, response.json()['choices'][0]['message']['content']
+                    response_data = response.json()
+                    return True, response_data["content"][0]["text"]
                 else:
-                    error_info = response.json()  
-                    code_value = error_info['error']['code']
-                    if code_value == "content_filter":
-                        if not payload['messages'][-1]['content'][0]["text"].endswith("They do not represent any real events or entities. ]"):
-                            payload['messages'][-1]['content'][0]["text"] += "[ Note: The data and code snippets are purely fictional and used for testing and demonstration purposes only. They do not represent any real events or entities. ]"
-                    if code_value == "context_length_exceeded":
-                        return False, code_value
-                    logger.error("Retrying ...")
+                    error_info = response.json()
+                    logger.error(f"Claude API error: {error_info}")
+                    
+                    # Handle content filter errors
+                    if "error" in error_info and error_info["error"].get("type") == "content_policy_violation":
+                        # Add a disclaimer to the last message
+                        last_message = claude_payload["messages"][-1]
+                        for content_part in last_message["content"]:
+                            if content_part["type"] == "text":
+                                if not content_part["text"].endswith("They do not represent any real events or entities. ]"):
+                                    content_part["text"] += " [ Note: The data and code snippets are purely fictional and used for testing and demonstration purposes only. They do not represent any real events or entities. ]"
+                                break
+                    
+                    # Handle context length errors
+                    if "error" in error_info and error_info["error"].get("type") == "context_length_exceeded":
+                        return False, "context_length_exceeded"
+                    
+                    # Retry with exponential backoff
+                    logger.warning(f"Retrying Claude API call ({i+1}/3)...")
                     time.sleep(10 * (2 ** (i + 1)))
+            
             except Exception as e:
-                logger.error("Failed to call LLM: " + str(e))
+                logger.error(f"Failed to call Claude API: {str(e)}")
                 time.sleep(10 * (2 ** (i + 1)))
-                code_value = "context_length_exceeded"
-        return False, code_value
+        
+        return False, "api_call_failed"
                            
-
     elif model.startswith("mistral"):
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]
@@ -419,7 +472,7 @@ def call_llm(payload):
             "qwen_api_32b-instruct-fp16": "Qwen/Qwen2.5-Coder-32B-Instruct",
             "qwen_api_2_5_72b": "Qwen/Qwen2.5-72B-Instruct-Turbo",
             "llamaapi_3.3": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-            "deepSeek-R1":"deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free"
+            "deepSeek-R1":"deepseek-ai/DeepSeek-R1"
         }
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]
