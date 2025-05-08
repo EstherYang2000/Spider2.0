@@ -176,15 +176,6 @@ class RefinementLogRAG:
             "dialect": "bigquery"
         },
         {
-            "original_sql": "SELECT * FROM orders WHERE name = 'Niko's name' and money >100",
-            "refined_sql": """SELECT * FROM orders WHERE name = "Niko's name" and money >100""",
-            "error": "Syntax error: Unterminated string literal at [1:38]",
-            "success": True,
-            "error_type": "SyntaxError",
-            "description": "Use double quotes for string literals.",
-            "dialect": "bigquery"
-        },
-        {
             "original_sql": "SELECT * FROM orders WHERE status = completed",
             "refined_sql": "SELECT * FROM orders WHERE status = 'completed'",
             "error": "Unrecognized name: completed",
@@ -393,16 +384,17 @@ if __name__ == "__main__":
         filter_value="sqlite",
         embed_fields=["original_sql", "refined_sql", "error", "error_type", "description"]
     )
-    
-    # query_sql = "SELECT * FROM orders WHERE order_date = '2023-01-01'"
-    # query_error = "Cannot compare DATE with STRING"
-    # query_type = "DateTime"
-    # similar_cases = memory_bank.retrieve(
-    #     query_text=f"{query_sql} || {query_error} || {query_type}",
-    #     top_k=3,
-    #     constraint_key="error_type",
-    #     constraint_value=query_type
-    # )
-    # print(similar_cases)
+
+    query_sql = "SELECT * FROM orders WHERE order_date = '2023-01-01'"
+    query_error = "Cannot compare DATE with STRING"
+    query_type = "DateTime"
+
+    similar_cases = memory_bank.retrieve(
+        query_text=f"{query_sql} || {query_error} || {query_type}",
+        top_k=3,
+        constraint_key="error_type",
+        constraint_value=query_type
+    )
+    print(similar_cases)
 
     

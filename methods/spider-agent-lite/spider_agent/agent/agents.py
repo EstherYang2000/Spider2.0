@@ -113,14 +113,16 @@ class PromptAgent:
     def generate_reference_plan(self):
         from spider_agent.agent.planner_critique_agents import PlannerAgent
         if self.planner_agent is None:
-            self.planner_agent = PlannerAgent(model=self.model)
+            logger.info(f"[MCP] Initializing PlannerAgent for {self.dialect} dialect.")
+            self.planner_agent = PlannerAgent(model=self.model, dialect=self.dialect)
         question = self.env.task_config.get('question', '')
         schema_string = self.env.task_config.get('schema', '')
         evidence = self.env.task_config.get('evidence', '')
         self.reference_plan = self.planner_agent.generate_plan(
             question=question,
             schema_string=schema_string,
-            evidence=evidence
+            evidence=evidence,
+            dialect=self.dialect
             )
         logger.info(f"[MCP] Generated Plan: {self.reference_plan}")   
     def set_env_and_task(self, env: Spider_Agent_Env):
@@ -150,7 +152,8 @@ class PromptAgent:
                 # self.actions.append(rag_query_action)
         
   
-        self.dialect = _infer_dialect_from_env(self.env)
+        self.dialect = self.env.task_config['type'].lower()
+        logger.info(f"[MCP] Dialect: {self.dialect}")
 
             
         if self.env.task_config['type'] == 'Bigquery':

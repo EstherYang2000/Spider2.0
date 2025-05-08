@@ -7,12 +7,13 @@ class PlannerAgent:
     """
     Generates a detailed plan for SQL query construction.
     """
-    def __init__(self, model="gpt-4", max_tokens=800, temperature=0.3):
+    def __init__(self, model="gpt-4", max_tokens=800, temperature=0.3, dialect=None):
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.dialect = dialect  # Default dialect
 
-    def generate_plan(self, question: str, schema_string: str, evidence: str = "", prompt_prefix: str = "", linked_tables=None, linked_columns=None) -> dict:
+    def generate_plan(self, question: str, schema_string: str, evidence: str = "", prompt_prefix: str = "", linked_tables=None, linked_columns=None,dialect=None) -> dict:
         # 過濾 schema_string，只保留 linked_tables/linked_columns
         if linked_tables is not None or linked_columns is not None:
             filtered_schema = []
@@ -31,6 +32,7 @@ class PlannerAgent:
             schema_string = '; '.join(filtered_schema)
 
         prompt = (
+            f"You are generating a SQL plan for {dialect}\n"
             f"{prompt_prefix}\n"
             "Task: Generate a step-by-step plan for constructing an accurate SQL query based on the user question, schema, and evidence.\n"
             "Only output the step-by-step plan. Do NOT generate any SQL or code.\n"
@@ -40,14 +42,19 @@ class PlannerAgent:
         if evidence:
             prompt += f"External Knowledge: {evidence}\n"
         prompt += (
-            "Plan:\n"
-            "After the plan, define the expected CSV output format for the answer, strictly matching the user question's requirements. "
-            "Do NOT add extra columns or information unless explicitly required by the question. "
-            "Use the following format:\n"
-            "Expected CSV format:\n"
-            "<column1> (type)\n"
-            "[Add notes such as \"answer in one row\" if applicable.]\n"
+        "Example of the exact JSON format:\n"
+        "{\n"
+        '  "plan": [\n'
+        '    "Step 1 description",\n'
+        '    "Step 2 description",\n'
+        '    "..."\n'
+        "  ],\n"
+        '  "expected_csv_format": "<column1> (type)\\n[notes]"\n'
+        "}\n"
+        "After the plan, define the expected CSV output format for the answer, strictly matching the user question's requirements. "
+        "Do NOT add extra columns or information unless explicitly required by the question. "
         )
+        
         logger.info(f"[MCP] Generate Reference Plan Prompt: {prompt}")
         payload = {
             "model": self.model,
@@ -55,16 +62,23 @@ class PlannerAgent:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         }
-        logger.info("Calling LLM for Reference Plan and Expected CSV format generation...")
-        _, response = call_llm(payload)
-        logger.info(f"[MCP] Reference Plan and Expected CSV format: {response}")
-        # 解析 LLM 回傳，把 Plan 跟 Expected CSV format 分開
-        if "Expected CSV format:" in response:
-            plan, expected_csv_format = response.split("Expected CSV format:", 1)
-        else:
-            plan, expected_csv_format = response, ""
+        # 直接解析成 dict
+        try:
+            result = json.loads(response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse plan JSON: {e}")
+            # 退回到原本的字串拆分 fallback
+            plan_text = response
+            plan_steps = re.findall(r'\d+\.\s*(.*?)(?=\n\d+\.|$)', plan_text, re.S)
+            expected_csv_format = ""
+            return {
+                "plan": [s.strip() for s in plan_steps],
+                "expected_csv_format": expected_csv_format,
+                "critique_notes": []
+            }
+
         return {
-            "plan": plan.strip(),
-            "expected_csv_format": expected_csv_format.strip(),
+            "plan": result.get("plan", []),
+            "expected_csv_format": result.get("expected_csv_format", ""),
             "critique_notes": []
         }

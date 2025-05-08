@@ -576,7 +576,7 @@ def call_llm(payload):
                 code_value = "unknown_error"
         return False, code_value
 
-    elif model.startswith("gemini-2.5-pro-preview-03-25"):
+    elif model.startswith("gemini-2.5-pro-preview-03-25") or model.startswith("gemini-2.5-pro-preview-05-06"):
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]
         temperature = payload["temperature"]

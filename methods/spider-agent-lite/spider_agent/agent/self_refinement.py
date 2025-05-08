@@ -214,7 +214,7 @@ class SelfRefinementAgent(PromptAgent):
         self_refinement_enabled=True,  # 新增：是否啟用自我修正
         expected_csv_format=None,   # 新增：答案格式要求
         use_schema_linking=False,  # 新增：是否啟用 schema linking
-        schema_link_mode='sql',  # 新增：schema linking 模式
+        schema_link_mode='file',  # 新增：schema linking 模式
         validate_result=False  # 新增：是否啟用 validate_result
     ):
         super().__init__(
@@ -245,6 +245,8 @@ class SelfRefinementAgent(PromptAgent):
         self.validate_result = validate_result  # 新增：是否啟用 validate_result
         # self.schema_retriever = None  # 兩階段 schema 檢索器（延遲初始化）
         self.schema_link_mode = schema_link_mode  # 'file' or 'sql'
+        self.plan_steps: List[str] = self.reference_plan.get("plan", [])
+        self.expected_csv_format = self.reference_plan.get("expected_csv_format", "")
 
     
     def format_similar_cases(self, cases):
@@ -256,15 +258,18 @@ class SelfRefinementAgent(PromptAgent):
             lines.append(f"- Original SQL: {case.get('original_sql')}\n  Refined SQL: {case.get('refined_sql')}\n  Error Type: {case.get('error_type')}\n  Error: {case.get('error')}\n  Success: {case.get('success')}")
         return "\n".join(lines)
     def compose_refinement_prompt(self, original_sql, obs,critique_msg, error_hint, similar_text, repeated_error, error_type, expected_csv_format):
+        dialect_hint = f"-- Target SQL Dialect: {self.dialect.upper()}\n\n"
         rewrite_hint = ""
         if repeated_error:
             rewrite_hint = (
                 "\n\nNote: The previous fix did NOT resolve the issue. "
-                "Try one of the following strategies:\n"
+                f"\n\n[Warning] Your previous fix still had the same error type: {error_type}."
+                "\n\nTry one of the following strategies:\n"
                 "- Change the table joins or filters\n"
                 "- Use different columns based on the schema\n"
                 "- Try simplifying the query\n"
                 "- Use different aggregation or grouping logic\n"
+                "- Please change the core logic or try an alternative reasoning path.\n"
                 "Avoid repeating the same structure as the previous query."
             )
 
@@ -281,13 +286,16 @@ class SelfRefinementAgent(PromptAgent):
         format_instruction = ""
         if expected_csv_format:
             format_instruction = f"\nExpected CSV format:\n{expected_csv_format}\nEnsure the output matches this format."
-
+        from spider_agent.agent.refinement_strategies import refinement_strategy_selector
+        strategy_prompt = refinement_strategy_selector(error_type)
         return (
+            f"{dialect_hint}"
             f"Original SQL:\n{original_sql}\n\n"
             f"Previous Execution Summary:\n{obs}\n\n"
             f"{critique_msg or ''}\n"
             f"{error_hint}\n"
             # f"{similar_text}\n"
+            f"{strategy_prompt}\n"
             "Please refine the SQL query to resolve the issue."
             f"{rewrite_hint}{extra_hint}{format_instruction}"
         )
@@ -394,6 +402,7 @@ class SelfRefinementAgent(PromptAgent):
         """
         refined_sql = original_sql
         last_error_type = None
+        error_type = None
         critique_msg = None
         for attempt in range(self.max_refinement_iterations):
             logger.info(f"[Self-Refinement] Attempt {attempt + 1}...")
@@ -412,23 +421,27 @@ class SelfRefinementAgent(PromptAgent):
             similar_text = self.format_similar_cases(
                 self.refinement_rag.retrieve_similar(original_sql, error_msg or "", error_type, self.base_top_k)
             )
+            # similar_text = ""
             prompt = self.compose_refinement_prompt(
                 original_sql, obs,critique_msg, error_hint, similar_text,
                 last_error_type == error_type, error_type, self.expected_csv_format
             )
+            
             if hasattr(self, 'plan_critique'):
                 step_idx = self.env.task_config.get('current_step_idx', 0)
                 step_critique = self.plan_critique.get('critique_agent', {}).get(str(step_idx))
                 if step_critique:
                     prompt += f"\n[Step Critique {step_idx}] {step_critique}"
 
-            if error_type in ["ColumnNotFound", "TableNotFound"] and self.use_schema_linking:
-                if not critique_msg:
-                    critique_msg = f"Error Type: {error_type}. [Error Description] {error_msg} \nThe SQL query might be using non-existent columns or tables. Please analyze the question and suggest the correct schema components."
-                linked_info = self.schema_agent.run(
-                    self.env.task_config.get('question', ''),
-                    critique_msg
-                )
+            if error_type in ["ColumnNotFound", "TableNotFound"]:
+                self.use_schema_linking = True
+                if self.use_schema_linking:
+                    if not critique_msg:
+                        critique_msg = f"Error Type: {error_type}. [Error Description] {error_msg} \nThe SQL query might be using non-existent columns or tables. Please analyze the question and suggest the correct schema components."
+                        linked_info = self.schema_agent.run(
+                            self.env.task_config.get('question', ''),
+                            critique_msg
+                        )
 
                 if linked_info:
                     self.env.task_config['schema'] = linked_info
@@ -438,26 +451,78 @@ class SelfRefinementAgent(PromptAgent):
                     logger.info("Generate New Reference Plan")
                     self.generate_reference_plan()
                     logger.info(f"[Self-Refinement] New Reference Plan: {self.reference_plan}")
-
+            # if self.n_refine > 0:
+            #     prompt += (
+            #         f"Please based on the above information and generate {self.n_refine} correct SQL candidates."
+            #         f"\n\nCandidate 1:\n<SQL1>\n\n"
+            #         f"Candidate 2:\n<SQL2>\n\n"
+            #         f"Candidate 3:\n<SQL3>\n"
+            # )
             logger.info(f"[Self-Refinement] Prompt: {prompt}")
             response, action = self.predict(prompt)
+            # if self.n_refine > 0:
+            #     # 2. 解析出三条 SQL
+            #     candidate_sqls = []
+            #     for m in re.finditer(r"Candidate\s*\d+\s*:\s*(.*?)\n(?=Candidate|\Z)", response, re.S | re.I):
+            #         sql = m.group(1).strip().strip('`')
+            #         if sql:
+            #             candidate_sqls.append(sql)
+            #     # 保底：如果解析失败，就退回到原 logic
+            #     if not candidate_sqls:
+            #         candidate_sqls = [original_sql]
+            #     # 放到类的某处，或直接在方法开头定义
+            #     DIALECT_ACTION_MAP = {
+            #         "bigquery": BIGQUERY_EXEC_SQL,
+            #         "snowflake": SNOWFLAKE_EXEC_SQL,
+            #         # 默认用本地执行
+            #         "default": LOCAL_DB_SQL,
+            #     }
+            #     # 3. 并行执行（这里用 for loop，但根据 dialect 选择 action）
+            #     results = []  # List of (sql, obs, action, is_error, is_empty)
+            #     for sql in candidate_sqls:
+            #         # 根据 dialect 拿到对应的 Action 类
+            #         action_cls = DIALECT_ACTION_MAP.get(self.dialect.lower(), DIALECT_ACTION_MAP["default"])
+                    
+            #         if action_cls in (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL):
+            #             # 这两个只需要 sql_query
+            #             action = action_cls(sql_query=sql, is_save=False)
+            #         else:
+            #             # LOCAL_DB_SQL 需要 file_path/command/output，根据你的 env 来填
+            #             # 假设你把 sql 放到一个临时文件里，或者直接在 command 里执行
+            #             tmp_path = "/tmp/query.sql"
+            #             with open(tmp_path, "w") as f:
+            #                 f.write(sql)
+            #             action = action_cls(
+            #                 file_path=tmp_path,
+            #                 command=f"psql -d your_db -f {tmp_path}",
+            #                 output="result.csv"
+            #             )
+
+            #         obs_i, _ = self.env.step(action)
+            #         is_error = "error" in obs_i.lower() or "exception" in obs_i.lower()
+            #         is_empty = ("no rows" in obs_i.lower() or "empty result" in obs_i.lower()) and not is_error
+            #         results.append((sql, obs_i, action, is_error, is_empty))
+
             if not action or not getattr(action, 'sql_query', ''):
                 continue
-
+            prompt_prefix = f" It is the SQL for {self.dialect.upper()} dialect."
             refined_sql = action.sql_query
+            
+
+            obs, _ = self.env.step(action)
             critique_msg = self.critique_agent.critique_sql(
                 refined_sql, self.reference_plan,
                 self.env.task_config.get('question', ''),
                 self.env.task_config.get('schema', ''),
                 evidence=self.env.task_config.get('evidence', ''),
-                execution_feedback=response
+                response=response,
+                execution_feedback=obs,
+                prompt_prefix=prompt_prefix
             )
-
-            obs, _ = self.env.step(action)
             is_error = "error" in obs.lower() or "exception" in obs.lower()
             is_empty = ("no rows" in obs.lower() or "empty result" in obs.lower()) and not is_error
 
-            self.log_refinement_case(original_sql, refined_sql, error=obs, success=(not is_error and not is_empty), description=response)
+            # self.log_refinement_case(original_sql, refined_sql, error=obs, success=(not is_error and not is_empty), description=response)
 
             if not is_error and not is_empty:
                 return True, refined_sql, obs, error_type, action
@@ -483,12 +548,14 @@ class SelfRefinementAgent(PromptAgent):
         question = self.env.task_config.get('question', '')
         critique_msg = self.critique_agent.critique_sql(
             sql_query, self.reference_plan, question, schema_string, evidence,
-            response=response, execution_feedback=obs
+            response=response, execution_feedback=obs,
+            prompt_prefix=f" It is the SQL for {self.dialect.upper()} dialect."
         )
         logger.info(f"[MCP] Critique: {critique_msg}")
-        if critique_msg and any(
-            x in critique_msg.get('reasoning', '').lower()
-            for x in ["group by", "missing", "structure", "aggregate", "column", "select", "where", "join"]):
+        # if critique_msg and any(
+        #     x in critique_msg.get('reasoning', '').lower()
+        #     for x in ["group by", "missing", "structure", "aggregate", "column", "select", "where", "join"]):
+        if critique_msg:
             self.reference_plan['critique_notes'].append(critique_msg)
         return critique_msg
     def run(self):
@@ -503,6 +570,7 @@ class SelfRefinementAgent(PromptAgent):
         sql_query, critique_msg = None, None
 
         # --- 初始化 schema_agent ---
+        
         if self.schema_link_mode == "file":
             from spider_agent.agent.schema_agent import SchemaAgent, SchemaAgentEnv
             self.schema_agent_env = SchemaAgentEnv(base_dir=self.env.mnt_dir)
@@ -590,21 +658,7 @@ class SelfRefinementAgent(PromptAgent):
         # ======================================================
 
         # 2. MCP Loop: SQL generation, critique, refinement
-        def get_plan_step(plan_obj, idx: int) -> str:
-            import re
-            plan = plan_obj['plan'] if isinstance(plan_obj, dict) else plan_obj
-            steps = re.findall(r'\d+\.\s*(.*?)(?=\n\d+\.|$)', plan, re.DOTALL)
-            if not steps:
-                step_text = plan.strip()
-            elif idx < len(steps):
-                step_text = steps[idx].strip()
-            else:
-                step_text = steps[-1].strip()
-            critique_notes = plan_obj.get('critique_notes', []) if isinstance(plan_obj, dict) else []
-            if critique_notes:
-                notes = "\n".join([f"[Critique Note] {note['critique']}" for note in critique_notes if isinstance(note, dict) and 'critique' in note])
-                step_text += f"\n\n{notes}"
-            return step_text
+
         # obs += f"\n\nAfter the critique of plan, you are answering the following question:\n{self.env.task_config.get('question', '')}\n\nSchema:\n{self.env.task_config.get('schema', '')}"
         while not done and step_idx < self.max_steps:
             
@@ -703,7 +757,7 @@ class SelfRefinementAgent(PromptAgent):
                 else:
                     done = False
                     logger.info("Validation failed. Continuing to next refinement step.")
-                    step_idx += 1
+                    # step_idx += 1
                     continue
 
             elif isinstance(action, Terminate) and not self.validate_result:

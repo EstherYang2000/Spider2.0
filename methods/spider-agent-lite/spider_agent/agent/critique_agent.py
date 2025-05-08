@@ -141,16 +141,16 @@ class CritiqueAgent:
         }
         max_retry = 3
         for attempt in range(max_retry):
-            response = call_llm(payload)
+            critique = call_llm(payload)
             logger.info(f"[CritiqueAgent] Attempt {attempt + 1} to critique SQL: {sql_query}")
-            if not response:
-                return {"reasoning": "", "revised_sql": "", "raw": ""}
+            if not critique:
+                return {"reasoning": "", "revised_sql": ""}
             else:
-                result = self._parse_critique_sql_response(response[1])
+                # result = self._parse_critique_sql_response(response[1])
                 # if not self.format_correct(result["revised_sql"]):
                 #     logger.info("[CritiqueAgent] Failed to format revised SQL, try again.")
                 #     return {"reasoning": "", "revised_sql": "", "raw": ""}
-                return result
+                return critique[1]
 
     def _parse_critique_sql_response(self, response: str) -> dict:
         """

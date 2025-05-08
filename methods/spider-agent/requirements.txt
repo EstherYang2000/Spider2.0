@@ -31,3 +31,5 @@ google.generativeai
 plotly
 snowflake==1.1.0
 together==1.5.5
+modelcontextprotocol==0.1.0
+python-a2a==0.5.2
