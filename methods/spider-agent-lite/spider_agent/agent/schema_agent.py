@@ -27,7 +27,7 @@ class SchemaAgent:
     An agent that uses LLM to explore a folder (with DDL.csv and other schema files),
     and generates a concise schema string for SQL generation based on user question and critique note.
     """
-    def __init__(self, env, llm_predict, max_steps=10, **kwargs):
+    def __init__(self, env, llm_predict, max_steps=20, **kwargs):
         self.env = env
         self.max_steps = max_steps
         self.llm_predict = llm_predict
@@ -87,14 +87,21 @@ class SchemaAgent:
             "Instructions:\n"
             "- Use CLI commands like `ls`, `cat`, `head`, `grep`, etc. to explore the folder.\n"
             "- Look for files like DDL.csv, .json, .csv, or .txt containing schema and sample data.\n"
-            "- Only after you’ve collected enough information, return a Terminate action.\n"
+            "- Only after you've collected enough information, return a Terminate action.\n"
             "- Do NOT immediately terminate. You must explore step by step first.\n"
             "- Return the schema in this format:\n"
-            '  Terminate(output="table1(col1[val1,val2], col2[val3,val4]); table2(col3[val5])")\n\n'
+            '  Terminate(output="table1(col1:TYPE[val1,val2], col2:TYPE[val3,val4]); table2(col3:TYPE[val5])")\n\n'
             "Example final output:\n"
-            '  Action: Terminate(output="singer(Singer_ID[1,2], Name[Joe,Timbaland]); song(Song_Name[You], Year[1992])")\n\n'
+            '  Action: Terminate(output="singer(Singer_ID:INT[1,2], Name:VARCHAR[Joe,Timbaland]); song(Song_Name:VARCHAR[You], Year:INT[1992])")\n\n'
             "Important:\n"
             "- For each column, try to extract 1–2 sample values from the data.\n"
+            "- Include the data type for each column (e.g., INT, VARCHAR, TIMESTAMP, VARIANT, etc.).\n"
+            "- For Snowflake, use these common types:\n"
+            "  * NUMBER/INT/FLOAT for numeric values\n"
+            "  * VARCHAR/STRING for text\n"
+            "  * TIMESTAMP for dates and times\n"
+            "  * VARIANT for JSON/array data\n"
+            "  * BOOLEAN for true/false values\n"
             "- Do NOT wrap actions in code blocks or quotes. Output your command like:\n"
             '  Action: Bash(code="ls")\n\n'
             "Start with listing the current directory."

@@ -2,6 +2,7 @@ import logging
 from spider_agent.agent.models import call_llm
 import re
 import json
+from spider_agent.agent.action import Terminate, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL
 
 logger = logging.getLogger("spider_agent")
 
@@ -53,7 +54,7 @@ class CritiqueAgent:
         self.max_tokens = max_tokens
         self.temperature = temperature
 
-    def critique_plan(self, plan: str, question: str, schema_string: str = "", prompt_prefix: str = "") -> tuple:
+    def critique_plan(self, plan: str, question: str, expected_csv_format: str, schema_string: str = "", prompt_prefix: str = "") -> tuple:
         prompt = (
             f"{prompt_prefix}\n"
             "You are an expert SQL planner. Critique the following step-by-step plan for answering the user's question.\n"
@@ -68,6 +69,7 @@ class CritiqueAgent:
             f"User Question:\n{question}\n"
             f"Schema:\n{schema_string}\n"
             f"Plan:\n{plan}\n"
+            f"Expected CSV format:\n{expected_csv_format}\n"
             "---"
         )
         payload = {
@@ -96,10 +98,12 @@ class CritiqueAgent:
 
     def critique_sql(
         self,
+        dialect: str,
         sql_query: str,
         plan: str,
         question: str,
         schema_string: str,
+        db: str,
         evidence: str = "",
         response: str = "",
         execution_feedback: str = "",
@@ -114,16 +118,23 @@ class CritiqueAgent:
                 f"SQL Query:\n{sql_query}"
             )
         else:
+            if dialect == "bigquery":
+                action_str = f"- Action: {BIGQUERY_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
+            elif dialect == "snowflake":
+                action_str = f"- Action: {SNOWFLAKE_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
+            else:
+                action_str = f"- Action: {LOCAL_DB_SQL.__name__}(file_path=..., command=\"...\", output=\".../result.csv\")\n"
             prompt = (
                 f"{prompt_prefix}\n"
                 "You are an expert SQL reviewer. Critique and revise the following SQL query.\n"
                 "Respond in two sections:\n"
                 "[Reasoning]\nExplain your critique and what needs fixing.\n"
                 "[SQL]\nOutput the corrected SQL using this format:\n"
-                "Action: BIGQUERY_EXEC_SQL(sql_query=\"...\")\n\n or Action: SNOWFLAKE_EXEC_SQL(sql_query=\"...\")\n\n or Action: LOCAL_DB_SQL(file_path=\"...\", command=\"...\", output=\"...\")\n\n"
+                f"{action_str}\n"                
                 f"User Question: {question}\n"
+                f"Database: {db}\n"
                 f"Schema:\n{schema_string}\n"
-                f"Plan:\n{plan}\n"
+                f"Current Plan:\n{plan}\n"
                 f"SQL Query:\n{sql_query}\n"
             )
             if evidence:

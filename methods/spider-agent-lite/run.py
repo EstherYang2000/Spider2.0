@@ -299,8 +299,8 @@ python run.py --model grok-3-beta -s test12 --example_index 0-10 --self_refineme
 python run.py --model gemini-2.5-pro-preview-03-25 -s test8 --example_index 0-5 --self_refinement --plan --use_schema_linking
 python run.py --model gpt-4.1-2025-04-14 -s test2 --example_index 10-20 --self_refinement --plan --use_schema_linking --overwriting --validate_result
 python run.py --model grok-3-beta -s test18 --example_index 11-20 --self_refinement --plan --rag_syntax --validate_result
-python run.py --model gemini-2.5-pro-preview-03-25 -s test10 --example_index 0-1 --self_refinement --plan --use_schema_linking --overwriting --validate_result --schema_link_mode sql
-python run.py --model gpt-4.1-2025-04-14 -s test4 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result
-python run.py --model gemini-2.5-pro-preview-05-06 -s test1 --example_index 40-45 --self_refinement --plan --rag_syntax --validate_result
+python run.py --model gemini-2.5-pro-preview-03-25 -s test10 --example_index 0-1 --self_refinement --plan --use_schema_linking --overwriting --validate_result --schema_link_mode file
+python run.py --model grok-3-beta -s test5 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result --use_schema_linking --schema_link_mode file
+python run.py --model o4-mini-2025-04-16 -s test11 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result  --use_schema_linking --schema_link_mode file
 
 """

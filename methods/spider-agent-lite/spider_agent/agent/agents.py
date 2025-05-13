@@ -119,6 +119,7 @@ class PromptAgent:
         schema_string = self.env.task_config.get('schema', '')
         evidence = self.env.task_config.get('evidence', '')
         self.reference_plan = self.planner_agent.generate_plan(
+            database_id=self.env.task_config.get('db', ''),
             question=question,
             schema_string=schema_string,
             evidence=evidence,
@@ -222,6 +223,7 @@ class PromptAgent:
                     user_question=self.env.task_config.get('question', self.instruction),
                     critique_note=None  # 第一次通常沒有 critique
                 )
+                
                 # self.schema_string = self.schema_agent.format_schema_prompt(self.schema_string)
 
                 logger.info(f"SchemaAgent generated new schema: {self.schema_string}")
