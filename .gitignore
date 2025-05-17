@@ -156,3 +156,6 @@ methods/spider-agent-lite/bigquery_credential.json
 
 # log
 *.log
+!spider2-lite/evaluation_suite/evaluate.py
+!spider2-lite/evaluation_suite/evaluate_yx.py
+!spider2-lite/evaluation_suite/evaluate_utils.py
