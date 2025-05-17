@@ -1,34 +1,61 @@
-source methods/spider-agent/spider2/bin/activate
-cd methods/spider-agent-lite
-python run.py --model grok-3-beta -s rag_log_syntax \
-	--example_index 0-11 --self_refinement --plan --rag_syntax \
-
-# python run.py --model qwen_api_32b-instruct-fp16 -s test1 --example_index 0-11 \
-# 	--self_refinement \
-# 	--plan \
-# 	--rag_syntax \
-
-python get_spider2lite_submission_data.py \
-	--experiment_suffix grok-3-beta-test21-plan-self-refinement \
-	--results_folder_name ../../spider2-lite/evaluation_suite/grok-3-beta-test21-plan-self-refinement \
-	
-
-cd ../..
-
-cd spider2-lite/evaluation_suite
-python evaluate.py \
-	--result_dir grok-3-beta-test21-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 30
-
+#!/bin/bash
+# Update the repository with latest changes
 git pull --no-rebase origin main
 
+# Activate the Spider2 virtual environment
+source methods/spider-agent/spider2/bin/activate
 
+# Change to the spider-agent-lite directory
+cd methods/spider-agent-lite
+
+# Run the initial experiment with GPT-4.1 model
+# Parameters:
+#   --model: Specifies the language model to use
+#   -s [test8:suffix]: Specifies the suffix to use
+#   --example_index [32-33:index]: Processes examples 32 and 33
+#   --self_refinement: Enables self-refinement mechanism
+#   --plan: Enables planning
+#   --rag_syntax: Enables RAG syntax
+#   --validate_result: Enables result validation
+#   --overwriting: Allows overwriting existing results
+python run.py --model gpt-4.1-2025-04-14 -s test8 --example_index 32-33 --self_refinement --plan --rag_syntax --validate_result --overwriting
+
+# Process results for GPT-4.1 model
+# This generates submission data for evaluation
 python get_spider2lite_submission_data.py \
-	--experiment_suffix  gpt-4.1-2025-04-14-test5-plan-self-refinement \
-	--results_folder_name ../../spider2-lite/evaluation_suite/gpt-4.1-2025-04-14-test5-plan-self-refinement
+	--experiment_suffix gpt-4.1-2025-04-14-test8-plan-self-refinement \
+	--results_folder_name ../../spider2-lite/evaluation_suite/gpt-4.1-2025-04-14-test8-plan-self-refinement \
+	
+# Return to the root directory
+cd ../..
+# Change to the evaluation suite directory
+cd spider2-lite/evaluation_suite
+# Evaluate the Grok-3-beta results
+# Parameters:
+#   --result_dir: Directory containing the results
+#   --mode exec_result: Evaluates execution results
+#   --max_evaluate_num 30: Maximum number of examples to evaluate
+python evaluate.py \
+	--result_dir grok-3-beta-test24-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 30
+
+
+python run.py --model grok-3-beta -s test8 --example_index 32-33 --self_refinement --plan --rag_syntax --validate_result --overwriting
+
+# Process results for GPT-4.1 model
+# This generates submission data for evaluation
+python get_spider2lite_submission_data.py \
+	--experiment_suffix  grok-3-beta-test24-plan-self-refinement\
+	--results_folder_name ../../spider2-lite/evaluation_suite/grok-3-beta-test24-plan-self-refinement
+
+# Return to the root directory
+cd ../..
+# Change to the evaluation suite directory
+cd spider2-lite/evaluation_suite
+# Evaluate the grok-3-beta results
+# Parameters:
+#   --result_dir: Directory containing the results
+#   --mode exec_result: Evaluates execution results
+#   --max_evaluate_num 20: Maximum number of examples to evaluate
 
 python evaluate.py \
-	--result_dir gpt-4.1-2025-04-14-test5-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 20
-
-python run.py --model grok-3-beta -s test21 --example_index 1-2 --self_refinement --plan --rag_syntax --validate_result --use_schema_linking --schema_link_mode file --overwriting
-python run.py --model o4-mini-2025-04-16 -s test10 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result --use_schema_linking --schema_link_mode file --overwriting
-python run.py --model gemini-2.5-pro-preview-05-06 -s test2 --example_index 0-10 --self_refinement --plan --rag_syntax --validate_result --use_schema_linking --schema_link_mode file --overwriting
+	--result_dirgrok-3-beta-test24-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 20
