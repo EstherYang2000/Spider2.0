@@ -467,12 +467,14 @@ def call_llm(payload):
 
         
     # elif model.startswith("codellama") or model.startswith("mistralai"):
-    elif model in ["qwen_api_32b-instruct-fp16", "qwen_api_2_5_72b", "llamaapi_3.3","deepSeek-R1"]:
+    elif model in ["qwen_api_32b-instruct-fp16", "qwen_api_2_5_72b", "llamaapi_3.3","deepSeek-R1","deepSeek-v3","Qwen3"]:
         model_mapping = {
             "qwen_api_32b-instruct-fp16": "Qwen/Qwen2.5-Coder-32B-Instruct",
             "qwen_api_2_5_72b": "Qwen/Qwen2.5-72B-Instruct-Turbo",
             "llamaapi_3.3": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-            "deepSeek-R1":"deepseek-ai/DeepSeek-R1"
+            "deepSeek-R1":"deepseek-ai/DeepSeek-R1",
+            "deepSeek-v3": "deepseek-ai/DeepSeek-V3",
+            "Qwen3":"Qwen/Qwen3-235B-A22B-fp8-tput"
         }
         messages = payload["messages"]
         max_tokens = payload["max_tokens"]

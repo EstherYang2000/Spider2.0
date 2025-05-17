@@ -696,7 +696,7 @@ class SelfRefinementAgent(PromptAgent):
             "   - Document any access issues for troubleshooting\n\n"
         )
         
-        prompt += f"[Current Plan Step]\n{plan_step}\n\n"
+        prompt += f"[Current Plan]\n{plan_step}\n\n"
         
         if critique_msg and isinstance(critique_msg, dict) and 'reasoning' in critique_msg:
             reasoning = critique_msg['reasoning'].strip().replace("\n", " ")
@@ -730,23 +730,27 @@ class SelfRefinementAgent(PromptAgent):
                 f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
             )
         
-        # Add step-specific instructions
-        if step_idx is not None and self.reference_plan and 'plan' in self.reference_plan:
-            total_steps = len(self.reference_plan['plan'])
-            if step_idx == total_steps - 1:
-                prompt += (
-                    "[Final Step]\n"
-                    "This is the final step. You can use Terminate action ONLY if:\n"
-                    "1. All previous steps have been completed successfully\n"
-                    "2. The result matches the expected format\n"
-                    "3. The data has been properly saved to result.csv\n"
-                )
-            else:
-                prompt += (
-                    f"[Intermediate Step {step_idx + 1}/{total_steps}]\n"
-                    "This is NOT the final step. DO NOT use Terminate action.\n"
-                    f"Remaining steps: {total_steps - (step_idx + 1)}\n"
-                )
+        # # Add step-specific instructions
+        # if step_idx is not None and self.reference_plan and 'plan' in self.reference_plan:
+        #     total_steps = len(self.reference_plan['plan'])
+        #     if step_idx == total_steps - 1:
+        #         prompt += (
+        #             "[Final Step]\n"
+        #             "This is the final step. You can use Terminate action ONLY if:\n"
+        #             "1. All previous steps have been completed successfully\n"
+        #             "2. The result matches the expected format\n"
+        #             "3. The data has been properly saved to result.csv\n"
+        #         )
+        #     else:
+        #         prompt += (
+        #             f"[Intermediate Step {step_idx + 1}/{total_steps}]\n"
+        #             "This is NOT the final step. DO NOT use Terminate action.\n"
+        #             f"Remaining steps: {total_steps - (step_idx + 1)}\n"
+        #         )
+        prompt += (
+            "- The result matches the expected format\n"
+            "- The data has been properly saved to result.csv\n"
+         )
             
         prompt += "\nGenerate your next action."
         return prompt
@@ -852,10 +856,10 @@ class SelfRefinementAgent(PromptAgent):
         # 2. MCP Loop: SQL generation, critique, refinement
         while not done and step_idx < self.max_steps:
             question = self.env.task_config.get('question', '')
-            if step_idx >= len(self.reference_plan['plan']):
-                plan_step = self.reference_plan['plan']  # 只取整個計畫
-            else:
-                plan_step = self.reference_plan['plan'][step_idx]  # 只取當前步驟
+            # if step_idx >= len(self.reference_plan['plan']):
+            plan_step = self.reference_plan['plan']  # 只取整個計畫
+            # else:
+            #     plan_step = self.reference_plan['plan'][step_idx]  # 只取當前步驟
             
             # 簡化 obs（僅摘要錯誤）
             execution_summary = ""
@@ -919,7 +923,7 @@ class SelfRefinementAgent(PromptAgent):
             is_error = "error" in obs.lower() or "exception" in obs.lower()
             is_empty = ("no rows" in obs.lower() or "empty result" in obs.lower()) and not is_error
 
-            if self.self_refinement_enabled and sql_query and (is_error or is_empty):
+            if self.x and sql_query and (is_error or is_empty):
                 logger.info("Triggering self-refinement due to error or empty result.")
                 error_msg = obs if is_error else None
                 empty_result = is_empty
@@ -944,11 +948,11 @@ class SelfRefinementAgent(PromptAgent):
             if not is_error and not is_empty and not is_bash_command:
                 if isinstance(action, Terminate):
                     # 檢查是否所有步驟都已完成
-                    if step_idx < len(self.reference_plan['plan']) - 1:
-                        logger.warning("Cannot terminate: Not all steps are completed.")
-                        obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
-                        done = False  # 確保不會終止
-                        continue
+                    # if step_idx < len(self.reference_plan['plan']) - 1:
+                    #     logger.warning("Cannot terminate: Not all steps are completed.")
+                    #     obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
+                    #     done = False  # 確保不會終止
+                    #     continue
                     step_idx += 1
                 elif isinstance(action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)):
                     step_idx += 1
@@ -972,11 +976,11 @@ class SelfRefinementAgent(PromptAgent):
 
                 if validate_passed and validation_feedback.get("valid_result"):
                     # 再次檢查是否所有步驟都已完成
-                    if step_idx < len(self.reference_plan['plan']) - 1:
-                        logger.warning("Cannot terminate: Not all steps are completed.")
-                        obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
-                        done = False  # 確保不會終止
-                        continue
+                    # if step_idx < len(self.reference_plan['plan']) - 1:
+                    #     logger.warning("Cannot terminate: Not all steps are completed.")
+                    #     obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
+                    #     done = False  # 確保不會終止
+                    #     continue
                     done = True
                     result = action.output
                     logger.info("The task is done.")
@@ -988,11 +992,11 @@ class SelfRefinementAgent(PromptAgent):
 
             elif isinstance(action, Terminate) and not self.validate_result:
                 # 檢查是否所有步驟都已完成
-                if step_idx < len(self.reference_plan['plan']) - 1:
-                    logger.warning("Cannot terminate: Not all steps are completed.")
-                    obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
-                    done = False  # 確保不會終止
-                    continue
+                # if step_idx < len(self.reference_plan['plan']) - 1:
+                #     logger.warning("Cannot terminate: Not all steps are completed.")
+                #     obs = "Cannot terminate yet: Not all steps are completed. Please continue with the next step."
+                #     done = False  # 確保不會終止
+                #     continue
                 done = True
                 result = action.output
                 logger.info("The task is done.")
