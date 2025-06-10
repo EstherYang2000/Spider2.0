@@ -3,11 +3,19 @@ import json
 import os
 import sys
 import re
+import pandas as pd
+import shutil
 # Ensure project root is on path for absolute imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from wma.wma import WeightedMajorityAlgorithm, auto_select_epsilon
 from utils import get_bigquery_sql_result, get_snowflake_sql_result, get_sqlite_result,append_json,pre_evaluate_spider2sql
-
+import importlib.util
+spec = importlib.util.spec_from_file_location("evaluate", os.path.join(os.path.dirname(__file__), "..", "spider2-lite", "evaluation_suite", "evaluate.py"))
+evaluate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evaluate)
+load_jsonl_to_dict = evaluate.load_jsonl_to_dict
+compare_pandas_table = evaluate.compare_pandas_table
+compare_multi_pandas_table = evaluate.compare_multi_pandas_table
 
 def extract_sql_text(response: str):
     """
@@ -53,13 +61,13 @@ def execute_sql(sql_query,database_id=None,db_path=None):
         data_df = get_sqlite_result(sql_query,db_path)
     return data_df
 
-def run_sql_generation_wma(path_generate:str,questions:list, gold_dir:str, start_num_prompts:int, end_num_prompts:int, strategy:str="wma",auto_epsilon:bool=False):
+def run_sql_generation_wma(path_generate:str,questions:list, gold_dir:str, start_num_prompts:int, end_num_prompts:int, strategy:str="wma",auto_epsilon:bool=False,vote_folder:str="vote"):
     if args.experts:
         expert_list = []
         if "llamaapi_3_3" in args.experts:
             expert_list.append({"name": "llamaapi_3.3", "model": "llamaapi", "version": "3.3", "path_generate": "path_generate"})
-        if "gpt-4o" in args.experts:
-            expert_list.append({"name": "gpt-4o", "model": "gptapi", "version": "chatgpt-4o-latest", "path_generate": "chatgpt-4o-latest-mcp_rag_log-plan-self-refinement"})
+        if "gpt-4.1-2025-04-14" in args.experts:
+            expert_list.append({"name": "gpt-4.1-2025-04-14", "model": "gptapi", "version": "gpt-4.1-2025-04-14", "path_generate": "spider2-lite/evaluation_suite/gpt-4.1-2025-04-14-test8-plan-self-refinement"})
         if "qwen_api_32b-instruct-fp16" in args.experts:
             expert_list.append({"name": "qwen_api_32b-instruct-fp16", "model": "qwen_api", "version": "32b-instruct-fp16", "path_generate": "path_generate"})
         if "qwen_api_2_5_72b" in args.experts:
@@ -67,7 +75,7 @@ def run_sql_generation_wma(path_generate:str,questions:list, gold_dir:str, start
         if "gemini" in args.experts:
             expert_list.append({"name": "gemini", "model": "googlegeminiapi", "version": "gemini-2.5-pro-exp-03-25", "path_generate": "path_generate"})
         if "grok3" in args.experts:
-            expert_list.append({"name": "grok3", "model": "grokapi", "version": "grok-3-beta", "path_generate": "grok-3-beta-rag_log-plan-self-refinement"})
+            expert_list.append({"name": "grok3", "model": "grokapi", "version": "grok-3-beta", "path_generate": "spider2-lite/evaluation_suite/grok-3-beta-test24-plan-self-refinement"})
     print(expert_list)
     wma = WeightedMajorityAlgorithm(experts=[expert["name"] for expert in expert_list])
     if auto_epsilon:
@@ -82,96 +90,117 @@ def run_sql_generation_wma(path_generate:str,questions:list, gold_dir:str, start
         expert['raw_sql_outputs'] = {}
         for i in range(start_num_prompts, end_num_prompts):
             instance_id = questions[i]["instance_id"]
-            sql_path = os.path.join(path_generate,expert['path_generate'], instance_id,"spider", "result.json")
-            with open(sql_path) as f:
-                instance_data = json.load(f)
-            final_sql = instance_data.get('final_sql', '')
-            expert['raw_sql_outputs'][instance_id] = final_sql  
+            pred_data_path = os.path.join(expert['path_generate'], f"{instance_id}.csv",)
+            expert['raw_sql_outputs'][instance_id] = pred_data_path  
     # gold sql path
-    gold_sql_dir = os.path.join(gold_dir, "sql")
     results, final_results = [], []
-    for i in range(start_num_prompts, end_num_prompts):
-        instance_id = questions[i]["instance_id"]
+    for index in range(start_num_prompts, end_num_prompts):
+        instance_id = questions[index]["instance_id"]
         predictions_dict = {}
         for expert in expert_list:
             predictions_dict[expert["name"]] = expert["raw_sql_outputs"][instance_id]
         print(predictions_dict)
-        if strategy == "wma":
-            final_sql, chosen_experts, best_weight = wma.weighted_majority_vote(predictions_dict)
+        final_ans_path = ""
+        chosen_experts = []
+        best_weight = 0.0
+        if strategy == "wma" or strategy == "naive":
+            final_ans_path, chosen_experts, best_weight = wma.weighted_majority_vote(predictions_dict)
+            probs = []
+            expected_error_rate = 0.0
         elif strategy == "rwma":
-            final_sql, chosen_experts, best_weight = wma.randomized_weighted_majority_vote(predictions_dict)
+            final_ans_path, chosen_experts, best_weight,probs = wma.randomized_weighted_majority_vote(predictions_dict)
+            expected_error_rate = 0.0
+            for expert in predictions_dict:
+                historical_error_rate = wma.get_mistake_counts().get(expert, 0) / index if index > 0 else 0.0
+                expected_error_rate += probs[expert] * historical_error_rate
+        print("final_ans_path:", final_ans_path)
+        print("chosen_experts:", chosen_experts)
+        print("best_weight:", best_weight)
         
-        elif strategy == "naive":
-            pass
-        elif strategy == "rl":
-            pass
-        # print(final_sql)
-        # print(chosen_experts)
-        # print(best_weight)
-        db_path = os.path.join("spider2-lite/resource/databases/spider2-localdb",f"{instance_id}.sqlite")
-        gold_sql_path = os.path.join(gold_sql_dir,f"{instance_id}.sql")
-        with open(gold_sql_path) as f:
-            gold_sql = f.read()
-        print(gold_sql)
-        gold_data = execute_sql(gold_sql,instance_id,db_path)
-        if gold_sql:
-            is_correct_any = False
-            for expert, sql in predictions_dict.items():
-                sql_query, _, _ = extract_sql_text(sql)
-                print(sql_query)
-                pred_data = execute_sql(sql_query,instance_id,db_path)
-                print(pred_data)
-                score = pre_evaluate_spider2sql("exec_result", gold_data, pred_data, instance_id)
-                # if score > 0:
-                #     is_correct_any = True
-                # if strategy != "naive" and strategy != "rl":
-                #     wma.update_weights(expert, is_correct_any, strategy=strategy)
-        # if final_sql:
-        #     sql_query, _, _ = extract_sql_text(final_sql)
-        #     print(sql_query)
-        #     final_data = execute_sql(sql_query,instance_id,db_path)
-        #     save_dir = os.path.join("spider2-lite/evaluation_suite/vote", "vote")
-        #     final_data.to_csv(os.path.join(save_dir, f"{instance_id}.csv"), index=False)
-        # if auto_epsilon and index > 0:
-        #     mistake_counts = wma.get_mistake_counts()
-        #     best_expert_name, best_mistake_count = min(mistake_counts.items(), key=lambda x: x[1])
+        # load eval standard
+        eval_standard_dict = load_jsonl_to_dict(os.path.join(args.gold_dir, "spider2lite_eval.jsonl"))
+        gold_result_dir = os.path.join(args.gold_dir, "exec_result")
 
-        #     print(f"[Round {index}] epsilon updated to {epsilon:.6f} using best_expert: {best_expert_name} (mistakes: {best_mistake_count})")
-        # else:
-        #     best_expert_name, best_mistake_count = "-", 0
-        # print(f"✅ Overall best expert: {best_expert_name} with {best_mistake_count} mistakes.")
-        # # results.append({
-        #     "index": index + start_num_prompts,
-        #     "question": questions[i]["question"],
-        #     "gold_sql": gold_sql,
-        #     "final_sql": final_sql,
-        #     "chosen_experts": chosen_experts,
-        #     # "is_correct": is_correct_any,
-        #     "current_weights": wma.get_weights(),
-        #     "current_epsilon": epsilon,
-        #     "currenrt_mistakes": wma.get_mistake_counts(),
-        #     "best_expert": best_expert_name,
-        #     "best_expert_mistakes": best_mistake_count
+        if gold_result_dir:
             
-        # })
-        # final_results.append({
-        #     "index": index + start_num_prompts,
-        #     "final_sql": final_sql,
-        #     "chosen_expert": chosen_experts,
-        #     "best_weight": best_weight,
-        #     "current_epsilon": epsilon,
-        #     "currenrt_mistakes": wma.get_mistake_counts(),
-        #     "best_expert": best_expert_name,
-        #     "best_expert_mistakes": best_mistake_count
-        # })
-        # append_json(os.path.join(path_generate,"vote", f"final_result_{round}.json"), final_results)
-        # append_json(os.path.join(path_generate,"vote", f"results_{round}.json"), results)
+            expert_correctness = {}  # Track correctness for each expert
+            for expert, pred_path in predictions_dict.items():
+                is_correct_any = False
+                pred_pd = pd.read_csv(os.path.join(pred_path))
+                print("instance_id:",instance_id)
+                if '_' in instance_id:
+                    pattern = re.compile(rf'^{re.escape(instance_id)}(_[a-z])?\.csv$')
+                else:
+                    pattern = re.compile(rf'^{re.escape(instance_id)}(_[a-z])?\.csv$')
+                all_files = os.listdir(gold_result_dir)
+                csv_files = [file for file in all_files if pattern.match(file)]
+                csv_files = sorted(csv_files)
+                if len(csv_files) == 1:
+                    gold_pd = pd.read_csv(os.path.join(args.gold_dir, "exec_result",f"{instance_id}.csv"))
+                    score = compare_pandas_table(pred_pd, gold_pd, eval_standard_dict.get(instance_id)['condition_cols'], eval_standard_dict.get(instance_id)['ignore_order'])
+                elif len(csv_files) > 1:
+                    gold_pds = [pd.read_csv(os.path.join(gold_result_dir, file)) for file in csv_files]
+                    score = compare_multi_pandas_table(pred_pd, gold_pds, eval_standard_dict.get(instance_id)['condition_cols'], eval_standard_dict.get(instance_id)['ignore_order'])
+                print("score:",score)
+                if score == 1:
+                    is_correct_any = True
+                if strategy in ["wma","rwma"]:
+                    wma.update_weights(expert, is_correct_any, strategy=strategy)
+        if final_ans_path and os.path.exists(final_ans_path):
+            save_dir = os.path.join(path_generate, "data", vote_folder)
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            # Copy the file from final_ans_path to the destination
+            dest_path = os.path.join(save_dir, f"{instance_id}.csv")
+            print("dest_path:", dest_path)
+            print("final_ans_path:", final_ans_path)
+            shutil.copy2(final_ans_path, dest_path)
+        else:
+            print(f"Warning: final_ans_path is invalid or file does not exist: {final_ans_path}")
+        if auto_epsilon and i > 0:
+            mistake_counts = wma.get_mistake_counts()
+            best_expert_name, best_mistake_count = min(mistake_counts.items(), key=lambda x: x[1])
+
+            print(f"[Round {i}] epsilon updated to {epsilon:.6f} using best_expert: {best_expert_name} (mistakes: {best_mistake_count})")
+        else:
+            best_expert_name, best_mistake_count = "-", 0
+        print(f"✅ Overall best expert: {best_expert_name} with {best_mistake_count} mistakes.")
+        results.append({
+            "index": index,
+            "question": questions[index]["question"],
+            "final_path": final_ans_path,
+            "chosen_experts": chosen_experts,
+            "is_correct": is_correct_any,
+            "current_weights": wma.get_weights(),
+            "current_epsilon": epsilon,
+            "expert_probabilities": probs , # 新增專家期望值
+            "expected_error_rate": expected_error_rate,
+            "current_mistakes": wma.get_mistake_counts(),
+            "best_expert": best_expert_name,
+            "best_expert_mistakes": best_mistake_count
+            
+        })
+        final_results.append({
+            "index": index ,
+            "final_path": final_ans_path,
+            "chosen_expert": chosen_experts,
+            "best_weight": best_weight,
+            "current_epsilon": epsilon,
+            "current_mistakes": wma.get_mistake_counts(),
+            "best_expert": best_expert_name,
+            "best_expert_mistakes": best_mistake_count
+        })
+        save_log_dir = os.path.join(path_generate, "log", vote_folder)
+        if not os.path.exists(save_log_dir):
+            os.makedirs(save_log_dir)
+    append_json(os.path.join(save_log_dir, f"final_result_{vote_folder}.json"), final_results)
+    append_json(os.path.join(save_log_dir, f"results_{vote_folder}.json"), results)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Call LLM on prompts and output results.")
     parser.add_argument("--path_generate", type=str, required=True,default="methods/spider-agent-lite/output")
     parser.add_argument("--dataset_path", type=str, required=True,default="spider2-lite/evaluation_suite/gold")
-    parser.add_argument("--gold_dir", type=str, required=True,default="methods/spider-agent-lite/output")
+    parser.add_argument("--gold_dir", type=str, required=True,default="spider2-lite/evaluation_suite/gold ")
     parser.add_argument("--start_num_prompts", type=int, default=0)
     parser.add_argument("--end_num_prompts", type=int, default=1534,
                         help="Number of prompts to process from the prompt file (if not specified, take all).")
@@ -183,19 +212,22 @@ if __name__ == "__main__":
                         help="Strategy to use for SQL generation")
     parser.add_argument('--auto_epsilon', action='store_true',
                         help="Use auto epsilon selection")
+    parser.add_argument('--vote_folder', type=str, default="vote",
+                        help="Vote folder name")
     args = parser.parse_args()
     # Load JSONL dataset
     with open(args.dataset_path) as f:
         questions = [json.loads(line) for line in f if line.strip()]
-    run_sql_generation_wma(args.path_generate,questions, args.gold_dir, args.start_num_prompts, args.end_num_prompts, args.strategy, args.auto_epsilon)    
+    run_sql_generation_wma(args.path_generate,questions, args.gold_dir, args.start_num_prompts, args.end_num_prompts, args.strategy, args.auto_epsilon,args.vote_folder)    
     """
     python wma/evaluate_wma.py \
-        --path_generate methods/spider-agent-lite/output \
+        --path_generate spider2-lite/evaluation_suite/vote \
         --dataset_path methods/spider-agent-lite/examples/spider2-lite.jsonl \
         --gold_dir spider2-lite/evaluation_suite/gold \
         --start_num_prompts 0 \
-        --end_num_prompts 1 \
-        --experts gpt-4o \
-        --strategy wma \
-        --auto_epsilon
+        --end_num_prompts 100 \
+        --experts gpt-4.1-2025-04-14 grok3 \
+        --strategy rwma \
+        --auto_epsilon \
+        --vote_folder gpt_4.1_grok3_vote_100_rwma
     """

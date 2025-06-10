@@ -106,8 +106,8 @@ class WeightedMajorityAlgorithm:
             - chosen_experts: 推薦這條SQL的專家列表
             - best_weight: 這條SQL累積的總加權分數
         """
-        sql_to_weight = {}
-        sql_to_experts = {}
+        data_to_weight = {}
+        data_to_experts = {}
 
         # Check if predictions_dict is empty
         if not predictions_dict:
@@ -115,22 +115,22 @@ class WeightedMajorityAlgorithm:
             return None, [], 0.0
         
         # Accumulate weights for each SQL
-        for expert_name, sql_str in predictions_dict.items():
+        for expert_name, pred_data_path in predictions_dict.items():
             expert_weight = self.experts.get(expert_name, 1.0)
             # 每條候選SQL都獲得該專家的全部權重 (Group Voting)
-            if sql_str not in sql_to_weight:
-                sql_to_weight[sql_str] = 0.0
-                sql_to_experts[sql_str] = []
-            sql_to_weight[sql_str] += expert_weight
-            sql_to_experts[sql_str].append(expert_name)
+            if pred_data_path not in data_to_weight:
+                data_to_weight[pred_data_path] = 0.0
+                data_to_experts[pred_data_path] = []
+            data_to_weight[pred_data_path] += expert_weight
+            data_to_experts[pred_data_path].append(expert_name)
         # If no valid SQLs were added, return a safe fallback
-        if not sql_to_weight:
+        if not data_to_experts:
             logger.error("No valid SQLs received from experts.")
             return None, [], 0.0
         # 選出加權分數最高的SQL
-        best_sql = max(sql_to_weight, key=sql_to_weight.get)
-        best_weight = sql_to_weight[best_sql]
-        chosen_experts = list(set(sql_to_experts[best_sql]))
+        best_sql = max(data_to_weight, key=data_to_weight.get)
+        best_weight = data_to_weight[best_sql]
+        chosen_experts = list(set(data_to_experts[best_sql]))
 
         return best_sql, chosen_experts, best_weight
 
@@ -139,6 +139,7 @@ class WeightedMajorityAlgorithm:
         """
         Randomized version: draw a SQL according to expert weights.
         """
+        print("predictions_dict:", predictions_dict)
         if not predictions_dict:
             logger.error("No SQL predictions received from any expert.")
             return None, [], 0.0
@@ -159,13 +160,10 @@ class WeightedMajorityAlgorithm:
         )[0]
 
         # 3. From that expert, randomly select one SQL (or top-1)
-        sql_list = predictions_dict[selected_expert]
-        if not sql_list:
-            logger.warning(f"Selected expert {selected_expert} has no predictions.")
-            return None, [], 0.0
-        final_sql = random.choice(sql_list)
+        data_path = predictions_dict[selected_expert]
+        
 
-        return final_sql, [selected_expert], self.experts[selected_expert]
+        return data_path, [selected_expert], self.experts[selected_expert],probs
     
     def get_weights(self):
         """
