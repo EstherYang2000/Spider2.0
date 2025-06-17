@@ -827,7 +827,7 @@ class SelfRefinementAgent(PromptAgent):
         
         prompt += f"[Current Plan]\n{plan_step}\n\n"
         
-        if critique_msg and isinstance(critique_msg, dict) and 'reasoning' in critique_msg:
+        if critique_msg and 'reasoning' in critique_msg:
             reasoning = critique_msg['reasoning'].strip().replace("\n", " ")
             prompt += f"[Critique]\n{reasoning}\n\n"
             
