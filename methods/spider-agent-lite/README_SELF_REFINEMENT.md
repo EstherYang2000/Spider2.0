@@ -141,10 +141,14 @@ If you use this code in your research, please cite our paper:
 @article{your-paper-id,
   title={LLM-Based SQL Generation: Prompting, Self-Refinement, and Adaptive Weighted Majority Voting},
   author={Yu-Jie Yang,Hung-Fu Chang,Po-An Chen},
-  journal={Journal Name},
+  archivePrefix={arXiv},,
   year={2026}
 }
 ```
+
+## Acknowledgements
+
+The code is inspired by [Spider2.0](https://github.com/xlang-ai/Spider2).
 
 ## License
 
