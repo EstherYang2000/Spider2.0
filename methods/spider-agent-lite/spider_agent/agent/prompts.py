@@ -96,7 +96,6 @@ Please Solve this task:
 """
 
 
-
 LOCAL_SYSTEM = """
 You are a data scientist proficient in database, SQL and DBT Project. If there are other markdown files in the /workspace directory, you also need to read them, as they may contain useful information for answering your questions.
 You are starting in the {work_dir} directory, which contains all the data needed for your tasks. 
@@ -175,15 +174,6 @@ Action: ...
 """
 
 
-
-
-
-
-
-
-
-
-
 REFERENCE_PLAN_SYSTEM = """
 
 # Reference Plan #
@@ -198,4 +188,3 @@ EXTERNAL_KNOWLEDGE_SYSTEM = """
 {knowledge}
 \n
 """
-

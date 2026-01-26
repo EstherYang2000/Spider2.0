@@ -166,7 +166,6 @@ finally:
 """
 
 
-
 LOCAL_SQL_TEMPLATE = """
 import pandas as pd
 import os

@@ -1,11 +1,12 @@
-#coding=utf8
+# coding=utf8
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Any, Union, List, Dict
+from typing import Optional, Any
 from abc import ABC
 
+
 def remove_quote(text: str) -> str:
-    """ 
+    """
     If the text is wrapped by a pair of quote symbols, remove them.
     In the middle of the text, the same quote symbol should remove the '/' escape character.
     """
@@ -19,12 +20,12 @@ def remove_quote(text: str) -> str:
 
 @dataclass
 class Action(ABC):
-    
     action_type: str = field(
         repr=False,
-        metadata={"help": 'type of action, e.g. "exec_code", "create_file", "terminate"'}
+        metadata={
+            "help": 'type of action, e.g. "exec_code", "create_file", "terminate"'
+        },
     )
-
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -39,19 +40,17 @@ Observation: the observation space of this action type.
     def parse_action_from_text(cls, text: str) -> Optional[Any]:
         raise NotImplementedError
 
+
 @dataclass
 class Bash(Action):
-
     action_type: str = field(
         default="exec_code",
         init=False,
         repr=False,
-        metadata={"help": 'type of action, c.f., "exec_code"'}
+        metadata={"help": 'type of action, c.f., "exec_code"'},
     )
 
-    code: str = field(
-        metadata={"help": 'command to execute'}
-    )
+    code: str = field(metadata={"help": "command to execute"})
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -64,38 +63,33 @@ class Bash(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'Bash\(code=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(r"Bash\(code=(.*?)\)", text, flags=re.DOTALL)
         if matches:
             code = matches[-1]
             return cls(code=remove_quote(code))
         return None
-    
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(code="{self.code}")'
-    
-    
+
 
 @dataclass
 class CreateFile(Action):
-
     action_type: str = field(
         default="create_file",
         init=False,
         repr=False,
-        metadata={"help": 'type of action, c.f., "create_file"'}
+        metadata={"help": 'type of action, c.f., "create_file"'},
     )
 
-    code: str = field(
-        metadata={"help": 'code to write into file'}
-    )
+    code: str = field(metadata={"help": "code to write into file"})
 
     filepath: Optional[str] = field(
-        default=None,
-        metadata={"help": 'name of file to create'}
+        default=None, metadata={"help": "name of file to create"}
     )
 
     def __repr__(self) -> str:
-        return f"CreateFile(filepath=\"{self.filepath}\"):\n```\n{self.code.strip()}\n```"
+        return f'CreateFile(filepath="{self.filepath}"):\n```\n{self.code.strip()}\n```'
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -114,26 +108,38 @@ print("Hello, world!")
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'CreateFile\(filepath=(.*?)\).*?```[ \t]*(\w+)?[ \t]*\r?\n(.*)[\r\n \t]*```', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"CreateFile\(filepath=(.*?)\).*?```[ \t]*(\w+)?[ \t]*\r?\n(.*)[\r\n \t]*```",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             filepath = matches[-1][0].strip()
             code = matches[-1][2].strip()
             return cls(code=code, filepath=remove_quote(filepath))
         return None
-    
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(filepath='{self.filepath}':\n'''\n{self.code}\n''')"
-       
+
+
 @dataclass
 class EditFile(Action):
-    action_type: str = field(default="edit_file",init=False,repr=False,metadata={"help": 'type of action, c.f., "edit_file"'})
+    action_type: str = field(
+        default="edit_file",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "edit_file"'},
+    )
 
-    code: str = field(metadata={"help": 'code to write into file'})
+    code: str = field(metadata={"help": "code to write into file"})
 
-    filepath: Optional[str] = field(default=None,metadata={"help": 'name of file to edit'})
+    filepath: Optional[str] = field(
+        default=None, metadata={"help": "name of file to edit"}
+    )
 
     def __repr__(self) -> str:
-        return f"EditFile(filepath=\"{self.filepath}\"):\n```\n{self.code.strip()}\n```"
+        return f'EditFile(filepath="{self.filepath}"):\n```\n{self.code.strip()}\n```'
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -152,21 +158,28 @@ print("Hello, world!")
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'EditFile\(filepath=(.*?)\).*?```[ \t]*(\w+)?[ \t]*\r?\n(.*)[\r\n \t]*```', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"EditFile\(filepath=(.*?)\).*?```[ \t]*(\w+)?[ \t]*\r?\n(.*)[\r\n \t]*```",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             filepath = matches[-1][0].strip()
             code = matches[-1][2].strip()
             return cls(code=code, filepath=remove_quote(filepath))
-        return None    
-
+        return None
 
 
 @dataclass
 class LOCAL_DB_SQL(Action):
-
-    action_type: str = field(default="sql_command",init=False,repr=False,metadata={"help": 'type of action, c.f., "sql_command"'})
-    code: str = field(metadata={"help": 'SQL command to execute'})
-    file_path: str = field(default=None,metadata={"help": 'path to the database file'})
+    action_type: str = field(
+        default="sql_command",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "sql_command"'},
+    )
+    code: str = field(metadata={"help": "SQL command to execute"})
+    file_path: str = field(default=None, metadata={"help": "path to the database file"})
     output: str = field(default=None, metadata={"help": 'output file path or "direct"'})
 
     @classmethod
@@ -179,24 +192,41 @@ class LOCAL_DB_SQL(Action):
   - Example1: LOCAL_DB_SQL(file_path="data.sqlite", command="SELECT name FROM sqlite_master WHERE type='table'", output="directly")
   - Example2: LOCAL_DB_SQL(file_path="data.sqlite", command="SELECT * FROM users", output="users_output.csv")
 """
+
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'LOCAL_DB_SQL\(file_path=(.*?), command=(.*?), output=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"LOCAL_DB_SQL\(file_path=(.*?), command=(.*?), output=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             file_path, command, output = (item.strip() for item in matches[-1])
-            return cls(file_path=remove_quote(file_path), code=remove_quote(command), output=remove_quote(output))
+            return cls(
+                file_path=remove_quote(file_path),
+                code=remove_quote(command),
+                output=remove_quote(output),
+            )
         return None
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(file_path="{self.file_path}", command="{self.code}", output="{self.output}")'
-    
+
 
 @dataclass
 class BIGQUERY_EXEC_SQL(Action):
-    action_type: str = field(default="execute_bigquery_SQL",init=False,repr=False,metadata={"help": 'type of action, c.f., "exec_bq_sql"'})
-    sql_query: str = field(metadata={"help": 'SQL query to execute'})
-    is_save: bool = field(metadata={"help": 'whether to save result to CSV'})
-    save_path: str = field(default=None, metadata={"help": 'path where the output CSV file is saved if is_save is True'})
+    action_type: str = field(
+        default="execute_bigquery_SQL",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "exec_bq_sql"'},
+    )
+    sql_query: str = field(metadata={"help": "SQL query to execute"})
+    is_save: bool = field(metadata={"help": "whether to save result to CSV"})
+    save_path: str = field(
+        default=None,
+        metadata={"help": "path where the output CSV file is saved if is_save is True"},
+    )
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -212,9 +242,9 @@ The `save_path` CSV must be under the `/workspace` directory.
 """
 
     @classmethod
-    def parse_action_from_text(cls, text: str) -> Optional['BIGQUERY_EXEC_SQL']:
+    def parse_action_from_text(cls, text: str) -> Optional["BIGQUERY_EXEC_SQL"]:
         # pattern = r'BIGQUERY_EXEC_SQL\(sql_query=(?P<quote>\"\"\"|\"|\'|\"\"|\'\')(.*?)(?P=quote), is_save=(True|False)(, save_path=(?P<quote2>\"|\'|\"\"|\'\')(.*?)(?P=quote2))?\)'
-        pattern = r'''
+        pattern = r"""
         BIGQUERY_EXEC_SQL\(
             \s*sql_query\s*=\s*
             (?P<quote_sql>\"\"\"|\"|\'\'\'|\')  # Match opening quote for sql_query
@@ -228,29 +258,38 @@ The `save_path` CSV must be under the `/workspace` directory.
                 (?<!\\)(?P=quote_path)              # Match closing quote for save_path
             )?
             \s*\)
-    '''
+    """
         match = re.search(pattern, text, flags=re.DOTALL | re.VERBOSE)
         if match:
-            sql_query = match.group('sql_query').strip()  # Capturing the SQL query part
-            is_save = match.group('is_save').strip().lower() == 'true'  # Determining is_save
-            save_path = match.group('save_path') if match.group('save_path') else ""  # Optional save_path handling
+            sql_query = match.group("sql_query").strip()  # Capturing the SQL query part
+            is_save = (
+                match.group("is_save").strip().lower() == "true"
+            )  # Determining is_save
+            save_path = (
+                match.group("save_path") if match.group("save_path") else ""
+            )  # Optional save_path handling
             return cls(sql_query=sql_query, is_save=is_save, save_path=save_path)
         return None
-
-
 
     def __repr__(self) -> str:
         save_info = f', save_path="{self.save_path}"' if self.is_save else ""
         return f'BIGQUERY_EXEC_SQL(sql_query="{self.sql_query}", is_save={self.is_save}{save_info})'
 
 
-
 @dataclass
 class SNOWFLAKE_EXEC_SQL(Action):
-    action_type: str = field(default="execute_snowflake_SQL", init=False, repr=False, metadata={"help": 'type of action, c.f., "exec_sf_sql"'})
-    sql_query: str = field(metadata={"help": 'SQL query to execute'})
-    is_save: bool = field(metadata={"help": 'whether to save result to CSV'})
-    save_path: str = field(default=None, metadata={"help": 'path where the output CSV file is saved if is_save is True'})
+    action_type: str = field(
+        default="execute_snowflake_SQL",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "exec_sf_sql"'},
+    )
+    sql_query: str = field(metadata={"help": "SQL query to execute"})
+    is_save: bool = field(metadata={"help": "whether to save result to CSV"})
+    save_path: str = field(
+        default=None,
+        metadata={"help": "path where the output CSV file is saved if is_save is True"},
+    )
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -268,19 +307,19 @@ The `save_path` CSV must be under the `/workspace` directory.
     # @classmethod
     # def parse_action_from_text(cls, text: str) -> Optional['SNOWFLAKE_EXEC_SQL']:
     #     pattern = r'SNOWFLAKE_EXEC_SQL\(sql_query=(?P<quote>\"\"\"|\"|\'|\"\"|\'\')(.*?)(?P=quote), is_save=(True|False)(, save_path=(?P<quote2>\"|\'|\"\"|\'\')(.*?)(?P=quote2))?\)'
-        
+
     #     match = re.search(pattern, text, flags=re.DOTALL)
     #     if match:
     #         sql_query = match.group(2).strip()  # Capturing the SQL query part
     #         is_save = match.group(3).strip().lower() == 'true'  # Determining is_save
     #         save_path = match.group(6) if match.group(6) else ""  # Optional save_path handling
-            
+
     #         return cls(sql_query=sql_query, is_save=is_save, save_path=save_path)
     #     return None
 
     @classmethod
-    def parse_action_from_text(cls, text: str) -> Optional['SNOWFLAKE_EXEC_SQL']:
-        pattern = r'''
+    def parse_action_from_text(cls, text: str) -> Optional["SNOWFLAKE_EXEC_SQL"]:
+        pattern = r"""
             SNOWFLAKE_EXEC_SQL\(
                 \s*sql_query\s*=\s*
                 (?P<quote_sql>\"\"\"|\"|\'\'\'|\'|\"\"\")  # Match opening quote for sql_query
@@ -294,46 +333,54 @@ The `save_path` CSV must be under the `/workspace` directory.
                     (?<!\\)(?P=quote_path)                     # Match closing quote for save_path
                 )?
                 \s*\)
-        '''
+        """
         # Use re.VERBOSE to allow multiline and commented pattern
         match = re.search(pattern, text, flags=re.DOTALL | re.VERBOSE)
         if match:
             # Extracting sql_query
-            sql_query_raw = match.group('sql_query')
-            sql_query = sql_query_raw.replace(r'\"', '"').replace(r"\'", "'").replace('\\\\', '\\')
+            sql_query_raw = match.group("sql_query")
+            sql_query = (
+                sql_query_raw.replace(r"\"", '"')
+                .replace(r"\'", "'")
+                .replace("\\\\", "\\")
+            )
 
             # Extracting is_save
-            is_save_str = match.group('is_save')
-            is_save = is_save_str.strip().lower() == 'true'
+            is_save_str = match.group("is_save")
+            is_save = is_save_str.strip().lower() == "true"
 
             # Extracting save_path if present
             save_path = ""
-            if match.group('save_path'):
-                save_path_raw = match.group('save_path')
-                save_path = save_path_raw.replace(r'\"', '"').replace(r"\'", "'").replace('\\\\', '\\')
+            if match.group("save_path"):
+                save_path_raw = match.group("save_path")
+                save_path = (
+                    save_path_raw.replace(r"\"", '"')
+                    .replace(r"\'", "'")
+                    .replace("\\\\", "\\")
+                )
 
             return cls(sql_query=sql_query, is_save=is_save, save_path=save_path)
         return None
-
 
     def __repr__(self) -> str:
         save_info = f', save_path="{self.save_path}"' if self.is_save else ""
         return f'SNOWFLAKE_EXEC_SQL(sql_query="{self.sql_query}", is_save={self.is_save}{save_info})'
 
 
-    
-    
-    
 @dataclass
 class BQ_GET_TABLES(Action):
+    action_type: str = field(
+        default="get_tables",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "get_tables"'},
+    )
 
-    action_type: str = field(default="get_tables",init=False,repr=False,metadata={"help": 'type of action, c.f., "get_tables"'})
+    database_name: str = field(metadata={"help": "Google Cloud project name"})
 
-    database_name: str = field(metadata={"help": 'Google Cloud project name'})
+    dataset_name: str = field(metadata={"help": "Dataset name within the project"})
 
-    dataset_name: str = field(metadata={"help": 'Dataset name within the project'})
-
-    save_path: str = field(metadata={"help": 'path where the output CSV file is saved'})
+    save_path: str = field(metadata={"help": "path where the output CSV file is saved"})
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -345,35 +392,46 @@ class BQ_GET_TABLES(Action):
 * Examples:
   - Example1: BQ_GET_TABLES(database_name="bigquery-public-data", dataset_name="new_york", save_path="dataset_metadata.csv")
 """
+
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
         pattern = [
-            r'BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?), save_path=(.*?)\)',
-            r'BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?)\)'
+            r"BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?), save_path=(.*?)\)",
+            r"BQ_GET_TABLES\(database_name=(.*?), dataset_name=(.*?)\)",
         ]
         for p in pattern:
             matches = re.findall(p, text, flags=re.DOTALL)
             if matches:
-                database_name, dataset_name, save_path = (item.strip() for item in matches[-1])
-                return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), save_path=remove_quote(save_path))
+                database_name, dataset_name, save_path = (
+                    item.strip() for item in matches[-1]
+                )
+                return cls(
+                    database_name=remove_quote(database_name),
+                    dataset_name=remove_quote(dataset_name),
+                    save_path=remove_quote(save_path),
+                )
         return None
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(database_name="{self.database_name}", dataset_name="{self.dataset_name}", save_path="{self.save_path}")'
-    
-    
+
+
 @dataclass
 class BQ_GET_TABLE_INFO(Action):
+    action_type: str = field(
+        default="get_table_info",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "get_table_info"'},
+    )
 
-    action_type: str = field(default="get_table_info",init=False,repr=False,metadata={"help": 'type of action, c.f., "get_table_info"'})
+    database_name: str = field(metadata={"help": "Google Cloud project name"})
 
-    database_name: str = field(metadata={"help": 'Google Cloud project name'})
+    dataset_name: str = field(metadata={"help": "Dataset name within the project"})
 
-    dataset_name: str = field(metadata={"help": 'Dataset name within the project'})
+    table: str = field(metadata={"help": "Name of the table to fetch information from"})
 
-    table: str = field(metadata={"help": 'Name of the table to fetch information from'})
-
-    save_path: str = field(metadata={"help": 'path where the output CSV file is saved'})
+    save_path: str = field(metadata={"help": "path where the output CSV file is saved"})
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -385,12 +443,24 @@ class BQ_GET_TABLE_INFO(Action):
 * Examples:
   - Example1: BQ_GET_TABLE_INFO(database_name="bigquery-public-data", dataset_name="samples", table="shakespeare", save_path="shakespeare_info.csv")
 """
+
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'BQ_GET_TABLE_INFO\(database_name=(.*?), dataset_name=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"BQ_GET_TABLE_INFO\(database_name=(.*?), dataset_name=(.*?), table=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
-            database_name, dataset_name, table, save_path = (item.strip() for item in matches[-1])
-            return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), table=remove_quote(table), save_path=remove_quote(save_path))
+            database_name, dataset_name, table, save_path = (
+                item.strip() for item in matches[-1]
+            )
+            return cls(
+                database_name=remove_quote(database_name),
+                dataset_name=remove_quote(dataset_name),
+                table=remove_quote(table),
+                save_path=remove_quote(save_path),
+            )
         return None
 
     def __repr__(self) -> str:
@@ -399,18 +469,24 @@ class BQ_GET_TABLE_INFO(Action):
 
 @dataclass
 class BQ_SAMPLE_ROWS(Action):
+    action_type: str = field(
+        default="bq_sample_rows",
+        init=False,
+        repr=False,
+        metadata={"help": 'type of action, c.f., "bq_sample_rows"'},
+    )
 
-    action_type: str = field(default="bq_sample_rows",init=False,repr=False,metadata={"help": 'type of action, c.f., "bq_sample_rows"'})
+    database_name: str = field(metadata={"help": "Google Cloud project name"})
 
-    database_name: str = field(metadata={"help": 'Google Cloud project name'})
+    dataset_name: str = field(metadata={"help": "Dataset name within the project"})
 
-    dataset_name: str = field(metadata={"help": 'Dataset name within the project'})
+    table: str = field(metadata={"help": "Name of the table to sample data from"})
 
-    table: str = field(metadata={"help": 'Name of the table to sample data from'})
+    row_number: int = field(metadata={"help": "Number of rows to sample"})
 
-    row_number: int = field(metadata={"help": 'Number of rows to sample'})
-
-    save_path: str = field(metadata={"help": 'path where the output JSON file is saved'})
+    save_path: str = field(
+        metadata={"help": "path where the output JSON file is saved"}
+    )
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -421,17 +497,31 @@ class BQ_SAMPLE_ROWS(Action):
 * Examples:
   - Example1: BQ_SAMPLE_ROWS(database_name="bigquery-public-data", dataset_name="samples", table="shakespeare", row_number=3, save_path="shakespeare_sample_data.json")
 """
+
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'BQ_SAMPLE_ROWS\(database_name=(.*?), dataset_name=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"BQ_SAMPLE_ROWS\(database_name=(.*?), dataset_name=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
-            database_name, dataset_name, table, row_number, save_path = (item.strip() for item in matches[-1])
-            return cls(database_name=remove_quote(database_name), dataset_name=remove_quote(dataset_name), table=remove_quote(table), row_number=int(row_number), save_path=remove_quote(save_path))
+            database_name, dataset_name, table, row_number, save_path = (
+                item.strip() for item in matches[-1]
+            )
+            return cls(
+                database_name=remove_quote(database_name),
+                dataset_name=remove_quote(dataset_name),
+                table=remove_quote(table),
+                row_number=int(row_number),
+                save_path=remove_quote(save_path),
+            )
         return None
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(database_name="{self.database_name}", dataset_name="{self.dataset_name}", table="{self.table}", row_number={self.row_number}, save_path="{self.save_path}")'
-    
+
+
 @dataclass
 class SF_GET_TABLES(Action):
     action_type: str = field(default="sf_get_tables", init=False, repr=False)
@@ -441,14 +531,20 @@ class SF_GET_TABLES(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'SF_GET_TABLES\(database_name=(.*?), schema_name=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"SF_GET_TABLES\(database_name=(.*?), schema_name=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             db, schema, path = [remove_quote(v.strip()) for v in matches[-1]]
             return cls(database_name=db, schema_name=schema, save_path=path)
         return None
 
     def __repr__(self):
-        return f"SF_GET_TABLES(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", save_path=\"{self.save_path}\")"
+        return f'SF_GET_TABLES(database_name="{self.database_name}", schema_name="{self.schema_name}", save_path="{self.save_path}")'
+
+
 @dataclass
 class SF_GET_TABLE_INFO(Action):
     action_type: str = field(default="sf_get_table_info", init=False, repr=False)
@@ -459,14 +555,22 @@ class SF_GET_TABLE_INFO(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'SF_GET_TABLE_INFO\(database_name=(.*?), schema_name=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"SF_GET_TABLE_INFO\(database_name=(.*?), schema_name=(.*?), table=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             db, schema, table, path = [remove_quote(v.strip()) for v in matches[-1]]
-            return cls(database_name=db, schema_name=schema, table=table, save_path=path)
+            return cls(
+                database_name=db, schema_name=schema, table=table, save_path=path
+            )
         return None
 
     def __repr__(self):
-        return f"SF_GET_TABLE_INFO(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", table=\"{self.table}\", save_path=\"{self.save_path}\")"
+        return f'SF_GET_TABLE_INFO(database_name="{self.database_name}", schema_name="{self.schema_name}", table="{self.table}", save_path="{self.save_path}")'
+
+
 @dataclass
 class SF_SAMPLE_ROWS(Action):
     action_type: str = field(default="sf_sample_rows", init=False, repr=False)
@@ -478,14 +582,28 @@ class SF_SAMPLE_ROWS(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'SF_SAMPLE_ROWS\(database_name=(.*?), schema_name=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"SF_SAMPLE_ROWS\(database_name=(.*?), schema_name=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
-            db, schema, table, row_num, path = [remove_quote(v.strip()) for v in matches[-1]]
-            return cls(database_name=db, schema_name=schema, table=table, row_number=int(row_num), save_path=path)
+            db, schema, table, row_num, path = [
+                remove_quote(v.strip()) for v in matches[-1]
+            ]
+            return cls(
+                database_name=db,
+                schema_name=schema,
+                table=table,
+                row_number=int(row_num),
+                save_path=path,
+            )
         return None
 
     def __repr__(self):
-        return f"SF_SAMPLE_ROWS(database_name=\"{self.database_name}\", schema_name=\"{self.schema_name}\", table=\"{self.table}\", row_number={self.row_number}, save_path=\"{self.save_path}\")"
+        return f'SF_SAMPLE_ROWS(database_name="{self.database_name}", schema_name="{self.schema_name}", table="{self.table}", row_number={self.row_number}, save_path="{self.save_path}")'
+
+
 @dataclass
 class LOCAL_GET_TABLES(Action):
     action_type: str = field(default="local_get_tables", init=False, repr=False)
@@ -494,14 +612,20 @@ class LOCAL_GET_TABLES(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'LOCAL_GET_TABLES\(file_path=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"LOCAL_GET_TABLES\(file_path=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             file_path, save_path = [remove_quote(v.strip()) for v in matches[-1]]
             return cls(file_path=file_path, save_path=save_path)
         return None
 
     def __repr__(self):
-        return f"LOCAL_GET_TABLES(file_path=\"{self.file_path}\", save_path=\"{self.save_path}\")"
+        return f'LOCAL_GET_TABLES(file_path="{self.file_path}", save_path="{self.save_path}")'
+
+
 @dataclass
 class LOCAL_GET_TABLE_INFO(Action):
     action_type: str = field(default="local_get_table_info", init=False, repr=False)
@@ -511,14 +635,20 @@ class LOCAL_GET_TABLE_INFO(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'LOCAL_GET_TABLE_INFO\(file_path=(.*?), table=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"LOCAL_GET_TABLE_INFO\(file_path=(.*?), table=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
             file_path, table, save_path = [remove_quote(v.strip()) for v in matches[-1]]
             return cls(file_path=file_path, table=table, save_path=save_path)
         return None
 
     def __repr__(self):
-        return f"LOCAL_GET_TABLE_INFO(file_path=\"{self.file_path}\", table=\"{self.table}\", save_path=\"{self.save_path}\")"
+        return f'LOCAL_GET_TABLE_INFO(file_path="{self.file_path}", table="{self.table}", save_path="{self.save_path}")'
+
+
 @dataclass
 class LOCAL_SAMPLE_ROWS(Action):
     action_type: str = field(default="local_sample_rows", init=False, repr=False)
@@ -529,33 +659,46 @@ class LOCAL_SAMPLE_ROWS(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'LOCAL_SAMPLE_ROWS\(file_path=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(
+            r"LOCAL_SAMPLE_ROWS\(file_path=(.*?), table=(.*?), row_number=(.*?), save_path=(.*?)\)",
+            text,
+            flags=re.DOTALL,
+        )
         if matches:
-            file_path, table, row_number, save_path = [remove_quote(v.strip()) for v in matches[-1]]
-            return cls(file_path=file_path, table=table, row_number=int(row_number), save_path=save_path)
+            file_path, table, row_number, save_path = [
+                remove_quote(v.strip()) for v in matches[-1]
+            ]
+            return cls(
+                file_path=file_path,
+                table=table,
+                row_number=int(row_number),
+                save_path=save_path,
+            )
         return None
 
     def __repr__(self):
-        return f"LOCAL_SAMPLE_ROWS(file_path=\"{self.file_path}\", table=\"{self.table}\", row_number={self.row_number}, save_path=\"{self.save_path}\")"
+        return f'LOCAL_SAMPLE_ROWS(file_path="{self.file_path}", table="{self.table}", row_number={self.row_number}, save_path="{self.save_path}")'
+
 
 @dataclass
 class Terminate(Action):
-
     action_type: str = field(
         default="terminate",
         init=False,
         repr=False,
-        metadata={"help": "terminate action representing the task is finished, or you think it is impossible for you to complete the task"}
+        metadata={
+            "help": "terminate action representing the task is finished, or you think it is impossible for you to complete the task"
+        },
     )
 
     output: Optional[str] = field(
         default=None,
-        metadata={"help": "answer to the task or output file path or 'FAIL', if exists"}
+        metadata={
+            "help": "answer to the task or output file path or 'FAIL', if exists"
+        },
     )
 
-    code : str = field(
-        default=''
-    )
+    code: str = field(default="")
 
     @classmethod
     def get_action_description(cls) -> str:
@@ -572,14 +715,14 @@ class Terminate(Action):
 
     @classmethod
     def parse_action_from_text(cls, text: str) -> Optional[Action]:
-        matches = re.findall(r'Terminate\(output=(.*?)\)', text, flags=re.DOTALL)
+        matches = re.findall(r"Terminate\(output=(.*?)\)", text, flags=re.DOTALL)
         if matches:
             output = matches[-1]
             return cls(output=remove_quote(output))
         return None
-    
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     text = '''BIGQUERY_EXEC_SQL(
     sql_query="""
     WITH sessions AS (
@@ -647,4 +790,3 @@ if __name__ == '__main__':
 
     parsed = BIGQUERY_EXEC_SQL.parse_action_from_text(text)
     print("✅ Parsed result:\n", parsed)
-    

@@ -1,13 +1,17 @@
+"""
+Spider Agent Lite Runner
+
+This script runs end-to-end evaluations on the Spider2.0 benchmark using various agents.
+It supports different models, self-refinement, planning, and schema linking features.
+"""
+
 import argparse
 import datetime
 import json
 import logging
 import os
-import random
 import sys
 import glob
-
-from tqdm import tqdm
 
 from spider_agent.envs.spider_agent import Spider_Agent_Env
 from spider_agent.agent.agents import PromptAgent
@@ -16,22 +20,28 @@ from spider_agent.agent.self_refinement import SelfRefinementAgent
 # Ensure the logs directory exists
 if not os.path.exists("logs"):
     os.makedirs("logs")
-#  Logger Configs {{{ #
+
+# Logger Configuration {{{ #
+# Set up logging for the spider_agent module with multiple handlers for different log levels
 logger = logging.getLogger("spider_agent")
 logger.setLevel(logging.DEBUG)
 
+# Generate a timestamp string for log file names
 datetime_str: str = datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
 
+# Create file handlers for normal logs, debug logs, and special debug logs
 file_handler = logging.FileHandler(os.path.join("logs", "normal-{:}.log".format(datetime_str)), encoding="utf-8")
 debug_handler = logging.FileHandler(os.path.join("logs", "debug-{:}.log".format(datetime_str)), encoding="utf-8")
 stdout_handler = logging.StreamHandler(sys.stdout)
 sdebug_handler = logging.FileHandler(os.path.join("logs", "sdebug-{:}.log".format(datetime_str)), encoding="utf-8")
 
+# Set log levels for each handler
 file_handler.setLevel(logging.INFO)
 debug_handler.setLevel(logging.DEBUG)
 stdout_handler.setLevel(logging.INFO)
 sdebug_handler.setLevel(logging.DEBUG)
 
+# Create a formatter for log messages with color codes
 formatter = logging.Formatter(
     fmt="\x1b[1;33m[%(asctime)s \x1b[31m%(levelname)s \x1b[32m%(module)s/%(lineno)d-%(processName)s\x1b[1;33m] \x1b[0m%(message)s")
 file_handler.setFormatter(formatter)
@@ -39,9 +49,11 @@ debug_handler.setFormatter(formatter)
 stdout_handler.setFormatter(formatter)
 sdebug_handler.setFormatter(formatter)
 
+# Add filters to stdout and sdebug handlers to only log spider_agent messages
 stdout_handler.addFilter(logging.Filter("spider_agent"))
 sdebug_handler.addFilter(logging.Filter("spider_agent"))
 
+# Add all handlers to the logger
 logger.addHandler(file_handler)
 logger.addHandler(debug_handler)
 logger.addHandler(stdout_handler)
@@ -51,29 +63,37 @@ logger.addHandler(sdebug_handler)
 
 
 def config() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the evaluation script.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Run end-to-end evaluation on the benchmark"
     )
     
+    # Agent configuration
     parser.add_argument("--max_steps", type=int, default=30)
     
     parser.add_argument("--max_memory_length", type=int, default=25)
     parser.add_argument("--suffix", '-s', type=str, default="gpt-4-try1")
     
+    # Model parameters
     parser.add_argument("--model", type=str, default="gpt-4o")
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=10000)
     parser.add_argument("--stop_token", type=str, default=None)
     
-    # example config
+    # Test configuration
     parser.add_argument("--test_path","-t", type=str, default="./examples/spider2-lite.jsonl")
     parser.add_argument("--example_index", "-i", type=str, default="all", help="index range of the examples to run, e.g., '0-10', '2,3', 'all'")
     parser.add_argument("--example_name", "-n", type=str, default="", help="name of the example to run")
     parser.add_argument("--overwriting", action="store_true", default=False)
     parser.add_argument("--retry_failed", action="store_true", default=False)
 
-    # output related
+    # Output configuration
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--bq_only", action="store_true")
@@ -81,15 +101,15 @@ def config() -> argparse.Namespace:
     parser.add_argument("--dbt_only", action="store_true")
     parser.add_argument("--sf_only", action="store_true")
     
-    # Self-refinement related
+    # Self-refinement configuration
     parser.add_argument("--self_refinement", action="store_true", help="Enable self-refinement for SQL queries")
     parser.add_argument("--max_refinement_iterations", type=int, default=5, help="Maximum number of refinement iterations")
     parser.add_argument("--rag_syntax", action="store_true", help="Enable RAG syntax for self-refinement")
 
-    # Schema linking toggle
-    parser.add_argument('--use_schema_linking', action='store_true', default=False, help='是否啟用 schema linking (False by default)')
+    # Schema linking configuration
+    parser.add_argument('--use_schema_linking', action='store_true', default=False, help='Enable schema linking (False by default)')
     parser.add_argument('--schema_link_mode', choices=['file', 'sql'], default='file', help='Choose schema linking mode: "file" (use DDL or schema files) or "sql" (use database exploration).')
-    parser.add_argument('--validate_result', action='store_true', default=False, help='use validate_result to check answer (False by default)')
+    parser.add_argument('--validate_result', action='store_true', default=False, help='Use validate_result to check answer (False by default)')
     args = parser.parse_args()
 
     return args
@@ -100,11 +120,19 @@ def test(
     args: argparse.Namespace,
     test_all_meta: dict = None
 ) -> None:
+    """
+    Run the evaluation test on the specified benchmark tasks.
+
+    Args:
+        args: Parsed command-line arguments.
+        test_all_meta: Optional metadata for all tests (not used in this implementation).
+    """
     scores = []
     
-    # log args
+    # Log the arguments for debugging
     logger.info("Args: %s", args)
 
+    # Generate experiment ID based on model and suffix
     if args.suffix == "":
         logger.warning("No suffix is provided, the experiment id will be the model name.")
         experiment_id = args.model.split("/")[-1]
@@ -117,6 +145,7 @@ def test(
     if args.self_refinement:
         experiment_id = f"{experiment_id}-self-refinement"
 
+    # Environment configuration for the Spider Agent
     env_config = \
     {
         "image_name": "spider_agent-image",
@@ -129,8 +158,8 @@ def test(
     # Create the appropriate agent based on arguments
     if args.self_refinement:
         from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
-        # 初始化 env、planner_agent、critique_agent
-        env = None  # 先設為 None，稍後 set_env_and_task 會補上
+        # Initialize environment, planner_agent, critique_agent
+        env = None  # Will be set later in set_env_and_task
         planner_agent = PlannerAgent(model=args.model)
         critique_agent = CritiqueAgent(model=args.model)
         agent = SelfRefinementAgent(
@@ -161,12 +190,12 @@ def test(
             use_plan=args.plan,
         )
     valid_ids = []
-    ## load task configs
+    ## Load task configurations from the test file
     assert os.path.exists(args.test_path) and args.test_path.endswith(".jsonl"), f"Invalid test_path, must be a valid jsonl file: {args.test_path}"
     with open(args.test_path, "r") as f:
         task_configs = [json.loads(line) for line in f]
 
-        
+    # Filter tasks based on example_name or example_index
     if args.example_name != "":
         task_configs = [task for task in task_configs if args.example_name in task["id"]]
     else:
@@ -182,7 +211,7 @@ def test(
         output_dir = os.path.join(args.output_dir, instance_id)
         result_json_path =os.path.join(output_dir, "spider/result.json")
 
-
+        # Determine task type based on instance_id prefix
         task_type = None
         if task_config["instance_id"].startswith("bq") or task_config["instance_id"].startswith("ga"):
             task_type = 'bq'
@@ -196,6 +225,7 @@ def test(
         else:
             task_type = 'dbt'
 
+        # Filter tasks based on type flags
         valid_types = set()
         if args.local_only: valid_types.add('local')
         if args.bq_only: valid_types.add('bq')
@@ -209,6 +239,7 @@ def test(
 
         valid_ids.append(task_config["instance_id"])
         
+        # Check if task should be skipped or overwritten
         if not args.overwriting and os.path.exists(result_json_path):
             logger.info("Skipping %s", instance_id)
             continue
@@ -224,18 +255,21 @@ def test(
                     continue
             logger.info("Retrying %s", instance_id)
 
+        # Clean up existing output directory if it exists
         if os.path.exists(output_dir):
             os.system(f"rm -rf {output_dir}")
             logger.info("Removed existing %s", output_dir)
 
         os.makedirs(output_dir, exist_ok=True)
 
+        # Update environment config with instance-specific name
         env_config["init_args"]["name"] = experiment_id +"-"+ task_config["instance_id"]
 
-        
+        # Prepare task config with data copying instructions
         source_data_dir = os.path.dirname(args.test_path)        
         task_config['config'] = [{"type": "copy_all_subfiles", "parameters": {"dirs": [os.path.join(source_data_dir, task_config["instance_id"])]}}]
 
+        # Initialize the Spider Agent Environment
         env = Spider_Agent_Env(
             env_config=env_config,
             task_config=task_config,
@@ -243,29 +277,35 @@ def test(
             mnt_dir=output_dir
         )
     
+        # Set the environment and task for the agent
         agent.set_env_and_task(env)
     
+        # Log the task question
         logger.info('Task input:' + task_config['question'])
+        
+        # Run the agent and get results
         done, result_output = agent.run()
         trajectory = agent.get_trajectory()
 
+        # Create output directories and process results
         os.makedirs(os.path.join(output_dir, "spider"), exist_ok=True)
         result_files = env.post_process()
         spider_result = {"finished": done, "steps": len(trajectory["trajectory"]),
                            "result": result_output,"result_files": result_files, **trajectory}
-        # Extract last SQL action as final SQL and store it
+        
+        # Extract the last SQL action as the final SQL
         final_sql = None
         for step in spider_result.get("trajectory", []):
             action_str = step.get("action", "")
             if action_str.startswith("BIGQUERY_EXEC_SQL") or action_str.startswith("SNOWFLAKE_EXEC_SQL") or action_str.startswith("LOCAL_DB_SQL"):
                 final_sql = action_str
         spider_result["final_sql"] = final_sql
+        
+        # Save the result to JSON file
         with open(os.path.join(output_dir, "spider/result.json"), "w") as f:
             json.dump(spider_result, f, indent=2)
             
-            
-        
-        # Delete sqlite files
+        # Clean up SQLite/DuckDB files for local tasks
         if task_type == 'local':
             sqlite_files = glob.glob(os.path.join(output_dir, '*.sqlite')) + glob.glob(os.path.join(output_dir, '*.duckdb'))
 
@@ -276,27 +316,19 @@ def test(
                 except Exception as e:
                     print(f"Error deleting {file_path}: {e}")
         
-        
+        # Log completion and close environment
         logger.info("Finished %s", instance_id)
         env.close()
 
 if __name__ == '__main__':
+    # Parse command-line arguments and run the test
     args = config()
     
     test(args)
 
 """
-python run.py --model mistral-saba-24b -s test1 --example_index 0-1
-python run.py --model gemini-2.5-pro-preview-03-25 -s mcp --example_index 0-1
-python run.py --model qwen_api_32b-instruct-fp16 -s mcp --example_index 0-1 
-python run.py --model llamaapi_3.3 -s test1 --example_index 0-1 --self_refinement
-python run.py --model chatgpt-4o-latest -s mcp_rag_log --example_index 0-1 --self_refinement --plan
-python run.py --model grok-3-beta -s rag_log --example_index 4-5 --self_refinement --plan
-python run.py --model grok-3-beta -s base --example_index 1-20
-python run.py --model grok-3-beta -s test7 --example_index 11-20 --self_refinement --plan --rag_syntax
-python run.py --model o4-mini-2025-04-16 -s test3_wo_sl --example_index 11-20 --self_refinement --plan --rag_syntax --use_schema_linking
-python run.py --model grok-3-beta -s test12 --example_index 0-10 --self_refinement --plan --use_schema_linking
-python run.py --model gemini-2.5-pro-preview-03-25 -s test8 --example_index 0-5 --self_refinement --plan --use_schema_linking
+Example command lines for running the script with different models and configurations:
+
 python run.py --model gpt-4.1-2025-04-14 -s test2 --example_index 10-20 --self_refinement --plan --use_schema_linking --overwriting --validate_result
 python run.py --model grok-3-beta -s test18 --example_index 11-20 --self_refinement --plan --rag_syntax --validate_result
 python run.py --model gemini-2.5-pro-preview-03-25 -s test10 --example_index 0-1 --self_refinement --plan --use_schema_linking --overwriting --validate_result --schema_link_mode file

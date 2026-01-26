@@ -1,38 +1,64 @@
+"""
+Self-Refinement Agent Module
+
+This module implements the SelfRefinementAgent class, which extends the PromptAgent
+with advanced self-refinement capabilities for SQL query generation. The agent can
+iteratively improve SQL queries based on execution feedback, using a combination
+of LLM-based critique, historical case retrieval via RAG, and schema linking.
+
+Key Features:
+- Multi-step critique and planning (MCP) loop for SQL generation
+- Self-refinement of SQL queries based on execution errors or empty results
+- Retrieval-Augmented Generation (RAG) for historical refinement cases
+- Schema linking for improved query accuracy
+- Result validation using LLM analysis
+- Support for multiple SQL dialects (BigQuery, Snowflake, SQLite)
+- Comprehensive error analysis and categorization
+
+The agent implements a sophisticated workflow that includes:
+1. Initial plan generation and refinement
+2. Iterative SQL generation with critique feedback
+3. Self-refinement when errors occur
+4. Result validation and quality assurance
+5. Historical case logging for continuous improvement
+"""
+
 import logging
 import re
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 import os
 import json
-from collections import defaultdict, Counter
 from sentence_transformers import SentenceTransformer
 from spider_agent.agent.agents import PromptAgent
 from spider_agent.agent.planner_critique_agents import PlannerAgent, CritiqueAgent
-from spider_agent.agent.action import Terminate, BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL
+from spider_agent.agent.action import (
+    Terminate,
+    BIGQUERY_EXEC_SQL,
+    SNOWFLAKE_EXEC_SQL,
+    LOCAL_DB_SQL,
+)
 from spider_agent.agent.models import call_llm
-from spider_agent.agent.agents import critique_needs_schema
 from spider_agent.agent.refinement_memory_bank_agent import RefinementLogRAG
 
-logger = logging.getLogger("spider_agent") 
-
+logger = logging.getLogger("spider_agent")
 
 
 class SelfRefinementAgent(PromptAgent):
     """
     Extension of PromptAgent with self-refinement capabilities.
-    
+
     This agent can iteratively refine SQL queries based on execution results until termination
     conditions are met. It uses a combination of LLM-based refinement, RAG for historical fixes,
     and schema linking to improve query accuracy.
-    
+
     Key Features:
     - Self-refinement of SQL queries based on execution feedback
     - Historical case retrieval using RAG
     - Schema linking for improved query accuracy
     - Result validation using LLM
     - Support for multiple SQL dialects (BigQuery, Snowflake, SQLite)
-    
+
     Attributes:
         env: Environment for executing queries
         planner_agent: Agent for planning query execution steps
@@ -54,45 +80,50 @@ class SelfRefinementAgent(PromptAgent):
         validate_result (bool): Whether to validate results
     """
 
-    def try_rag_fix_from_history(self, original_sql: str, error_type: str) -> Optional[str]:
+    def try_rag_fix_from_history(
+        self, original_sql: str, error_type: str
+    ) -> Optional[str]:
         """
         Attempt to find a fix from historical refinement records based on error type and SQL similarity.
-        
+
         Args:
             original_sql (str): The original SQL query that needs fixing
             error_type (str): The type of error encountered
-            
+
         Returns:
             Optional[str]: The refined SQL query if a high-confidence match is found, None otherwise
         """
         if not hasattr(self, "refinement_rag"):
             self.refinement_rag = RefinementLogRAG()
-        
+
         # Set similarity threshold for matching
         similarity_threshold = 0.8
-        
+
         # Get multiple candidate fixes
         matched = self.refinement_rag.match(
-            original_sql, 
-            error_type=error_type, 
+            original_sql,
+            error_type=error_type,
             top_k=5,  # Increase number of candidates
-            min_similarity=similarity_threshold
+            min_similarity=similarity_threshold,
         )
-        
+
         if matched:
             # Select best match
             best_match = matched[0]
             if best_match[0] >= similarity_threshold:
-                logger.info(f"[SelfRefinementAgent] Found high-confidence fix from history.")
+                logger.info(
+                    f"[SelfRefinementAgent] Found high-confidence fix from history."
+                )
                 return best_match[1]["refined_sql"]
-        
+
         return None
 
-
-    def log_refinement_case(self, original_sql, refined_sql, error, success, description=None):
+    def log_refinement_case(
+        self, original_sql, refined_sql, error, success, description=None
+    ):
         """
         Log a SQL refinement case to the history for future reference.
-        
+
         Args:
             original_sql (str): The original SQL query
             refined_sql (str): The refined SQL query
@@ -102,18 +133,23 @@ class SelfRefinementAgent(PromptAgent):
         """
         if not success:
             return
-        if any(msg in error for msg in [
-            "Results saved to",
-            "BigQuery Storage module not found",
-            "This result was fetched from REST endpoint"  # Can be expanded with more non-error messages
-        ]):
+        if any(
+            msg in error
+            for msg in [
+                "Results saved to",
+                "BigQuery Storage module not found",
+                "This result was fetched from REST endpoint",  # Can be expanded with more non-error messages
+            ]
+        ):
             return
 
         # Automatically parse error type
         error_type = self.analyze_sql_error(error)
         historical_fix = self.try_rag_fix_from_history(refined_sql, error_type)
         if historical_fix:
-            logger.info(f"[SelfRefinementAgent] Applying fix from historical RAG match.")
+            logger.info(
+                f"[SelfRefinementAgent] Applying fix from historical RAG match."
+            )
             return historical_fix.split(":")[0] if error else "Unknown"
 
         record = {
@@ -123,7 +159,7 @@ class SelfRefinementAgent(PromptAgent):
             "success": success,
             "dialect": self.dialect,
             "error_type": error_type,
-            "description": description
+            "description": description,
         }
         try:
             with open(self.refinement_log_path, "a", encoding="utf-8") as f:
@@ -131,14 +167,13 @@ class SelfRefinementAgent(PromptAgent):
         except Exception as e:
             logger.warning(f"Failed to log refinement case: {e}")
 
-
     def analyze_sql_error(self, error_msg: str) -> str:
         """
         Analyze SQL error message and categorize it into specific error types.
-        
+
         Args:
             error_msg (str): The error message to analyze
-            
+
         Returns:
             str: Categorized error type (e.g., "SyntaxError", "ColumnNotFound", etc.)
         """
@@ -148,22 +183,74 @@ class SelfRefinementAgent(PromptAgent):
         if "ambiguous column" in msg or "is ambiguous" in msg:
             return "AmbiguousColumn"
 
-        if any(x in msg for x in ["no such column", "column not found", "unknown column", "unrecognized name", "invalid column", "does not exist in"]):
+        if any(
+            x in msg
+            for x in [
+                "no such column",
+                "column not found",
+                "unknown column",
+                "unrecognized name",
+                "invalid column",
+                "does not exist in",
+            ]
+        ):
             return "ColumnNotFound"
 
-        if any(x in msg for x in ["no such table", "table not found", "unknown table", "relation does not exist"]):
+        if any(
+            x in msg
+            for x in [
+                "no such table",
+                "table not found",
+                "unknown table",
+                "relation does not exist",
+            ]
+        ):
             return "TableNotFound"
 
-        if any(x in msg for x in ["syntax error", "parse error", "unexpected", "expected", "parsererror"]):
+        if any(
+            x in msg
+            for x in [
+                "syntax error",
+                "parse error",
+                "unexpected",
+                "expected",
+                "parsererror",
+            ]
+        ):
             return "SyntaxError"
 
-        if any(x in msg for x in ["function not found", "no such function", "unknown function", "not a function"]):
+        if any(
+            x in msg
+            for x in [
+                "function not found",
+                "no such function",
+                "unknown function",
+                "not a function",
+            ]
+        ):
             return "FunctionNotFound"
 
-        if any(x in msg for x in ["invalid input syntax", "invalid type", "type mismatch", "cannot cast", "datatype mismatch"]):
+        if any(
+            x in msg
+            for x in [
+                "invalid input syntax",
+                "invalid type",
+                "type mismatch",
+                "cannot cast",
+                "datatype mismatch",
+            ]
+        ):
             return "TypeMismatch"
 
-        if any(x in msg for x in ["permission denied", "access denied", "not authorized", "insufficient privileges"]):
+        if any(
+            x in msg
+            for x in [
+                "permission denied",
+                "access denied",
+                "not authorized",
+                "insufficient privileges",
+            ]
+        ):
             return "PermissionDenied"
 
         if "timeout" in msg or "timed out" in msg or "query exceeded" in msg:
@@ -253,7 +340,6 @@ class SelfRefinementAgent(PromptAgent):
                 "Check the data types of columns and ensure they are compatible. "
                 "Use DESCRIBE TABLE to verify column types."
             ),
-
             # General error hints
             "SyntaxError": (
                 "There is a syntax error in the SQL query. Please check for issues with "
@@ -323,12 +409,13 @@ class SelfRefinementAgent(PromptAgent):
         }
 
         return ERROR_HINT_TEMPLATES.get(error_type, error_type)
+
     """
     Extension of PromptAgent with self-refinement capabilities.
     This agent can iteratively refine SQL queries based on execution results
     until termination conditions are met.
     """
-    
+
     def __init__(
         self,
         env,
@@ -342,14 +429,37 @@ class SelfRefinementAgent(PromptAgent):
         max_steps=15,
         use_plan=False,
         max_refinement_iterations=5,  # Maximum number of refinement iterations
-        base_top_k=2,                # Default top_k for RAG case retrieval
-        rag_syntax=False,            # Whether to enable BigQuery syntax RAG
+        base_top_k=2,  # Default top_k for RAG case retrieval
+        rag_syntax=False,  # Whether to enable BigQuery syntax RAG
         self_refinement_enabled=True,  # Self-refinement switch
-        expected_csv_format=None,   # Expected answer format
+        expected_csv_format=None,  # Expected answer format
         use_schema_linking=False,  # Whether to enable schema linking
-        schema_link_mode='file',  # 'file' or 'sql'
-        validate_result=False  # Whether to enable result validation
+        schema_link_mode="file",  # 'file' or 'sql'
+        validate_result=False,  # Whether to enable result validation
     ):
+        """
+        Initialize the SelfRefinementAgent.
+
+        Args:
+            env: Environment for executing queries and accessing task configuration
+            planner_agent: Agent for generating execution plans
+            critique_agent: Agent for critiquing and improving queries/plans
+            model: LLM model to use for generation
+            max_tokens: Maximum tokens for LLM responses
+            top_p: Top-p sampling parameter
+            temperature: Temperature for LLM generation
+            max_memory_length: Maximum length of conversation memory
+            max_steps: Maximum number of execution steps
+            use_plan: Whether to use planning capabilities
+            max_refinement_iterations: Maximum attempts for self-refinement
+            base_top_k: Default number of similar cases to retrieve from RAG
+            rag_syntax: Whether to enable BigQuery syntax RAG
+            self_refinement_enabled: Whether self-refinement is enabled
+            expected_csv_format: Expected output format specification
+            use_schema_linking: Whether to use schema linking for accuracy
+            schema_link_mode: Mode for schema linking ('file' or 'sql')
+            validate_result: Whether to validate results using LLM
+        """
         super().__init__(
             model=model,
             max_tokens=max_tokens,
@@ -357,7 +467,7 @@ class SelfRefinementAgent(PromptAgent):
             temperature=temperature,
             max_memory_length=max_memory_length,
             max_steps=max_steps,
-            use_plan=use_plan
+            use_plan=use_plan,
         )
         self.env = env
         self.planner_agent = planner_agent
@@ -381,14 +491,13 @@ class SelfRefinementAgent(PromptAgent):
         self.plan_steps: List[str] = None
         self.expected_csv_format = None
 
-    
     def format_similar_cases(self, cases):
         """
         Format similar past refinement cases into a prompt-ready string.
-        
+
         Args:
             cases (list): List of similar refinement cases
-            
+
         Returns:
             str: Formatted string containing similar cases for prompt
         """
@@ -396,13 +505,26 @@ class SelfRefinementAgent(PromptAgent):
             return ""
         lines = ["\nSimilar past refinements:"]
         for case in cases:
-            lines.append(f"- Original SQL: {case.get('original_sql')}\n  Refined SQL: {case.get('refined_sql')}\n  Error Type: {case.get('error_type')}\n  Error: {case.get('error')}\n  Success: {case.get('success')}")
+            lines.append(
+                f"- Original SQL: {case.get('original_sql')}\n  Refined SQL: {case.get('refined_sql')}\n  Error Type: {case.get('error_type')}\n  Error: {case.get('error')}\n  Success: {case.get('success')}"
+            )
         return "\n".join(lines)
 
-    def compose_refinement_prompt(self, original_sql, obs, critique_msg, error_hint, similar_text, repeated_error, error_type, expected_csv_format, db):
+    def compose_refinement_prompt(
+        self,
+        original_sql,
+        obs,
+        critique_msg,
+        error_hint,
+        similar_text,
+        repeated_error,
+        error_type,
+        expected_csv_format,
+        db,
+    ):
         """
         Compose a comprehensive prompt for SQL refinement.
-        
+
         Args:
             original_sql (str): The original SQL query
             obs (str): Previous execution observation
@@ -413,12 +535,12 @@ class SelfRefinementAgent(PromptAgent):
             error_type (str): Type of error encountered
             expected_csv_format (str): Expected output format
             db (str): Database name
-            
+
         Returns:
             str: Complete prompt for SQL refinement
         """
         dialect_hint = f"-- Target SQL Dialect: {self.dialect.upper()}\n\n"
-        
+
         # Add project and dataset information for BigQuery
         project_info = ""
         if self.dialect.lower() == "bigquery":
@@ -431,7 +553,7 @@ class SelfRefinementAgent(PromptAgent):
                     "Example: `project_id.dataset_id.table_id`\n"
                     "For public datasets, you can use: `bigquery-public-data.dataset_id.table_id`\n\n"
                 )
-        
+
         # Add database context and verification instructions
         db_context = (
             f"[Database Context]\n"
@@ -499,7 +621,10 @@ class SelfRefinementAgent(PromptAgent):
                 "Ensure the output matches this format exactly.\n"
             )
 
-        from spider_agent.agent.refinement_strategies import refinement_strategy_selector
+        from spider_agent.agent.refinement_strategies import (
+            refinement_strategy_selector,
+        )
+
         strategy_prompt = refinement_strategy_selector(error_type)
 
         # Build the base prompt
@@ -530,24 +655,22 @@ class SelfRefinementAgent(PromptAgent):
         # Add dialect-specific action formats
         if self.dialect == "bigquery":
             prompt += (
-                f"- Action: {BIGQUERY_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {BIGQUERY_EXEC_SQL.__name__}(sql_query="...",is_save=..., save_path=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
         elif self.dialect == "snowflake":
             prompt += (
-                f"- Action: {SNOWFLAKE_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {SNOWFLAKE_EXEC_SQL.__name__}(sql_query="...",is_save=..., save_path=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
         elif self.dialect == "sqlite":
             prompt += (
-                f"- Action: {LOCAL_DB_SQL.__name__}(file_path=\"...\", command=\"...\", output=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {LOCAL_DB_SQL.__name__}(file_path="...", command="...", output=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
         else:
             # Default action format if dialect is not recognized
-            prompt += (
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
-            )
+            prompt += f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
 
         return prompt
 
@@ -557,26 +680,31 @@ class SelfRefinementAgent(PromptAgent):
         Updates self.syntax_reference with relevant syntax information.
         """
         self.syntax_reference = ""
-        question = self.env.task_config.get('question', '')
-        schema = self.env.task_config.get('schema', '')
+        question = self.env.task_config.get("question", "")
+        schema = self.env.task_config.get("schema", "")
         plan = self.reference_plan
-        critique = self.plan_critique if hasattr(self, 'plan_critique') else {}
+        critique = self.plan_critique if hasattr(self, "plan_critique") else {}
         from spider_agent.agent.rag_syntax_agent import RAGSyntaxAgent
+
         prompt = (
             f"User Question: {question}\nSchema: {schema}\nPlan: {plan}\nCritique: {critique}\n"
             f"{RAGSyntaxAgent.get_syntax_request_prompt()}"
         )
-        response = call_llm({
-            "model": self.model,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature
-        })
+        response = call_llm(
+            {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+        )
         if isinstance(response, tuple):
             _, content = response
         else:
             content = response
-        topics = [t.strip() for t in content.split(',') if t.strip()] if content else []
+        topics = [t.strip() for t in content.split(",") if t.strip()] if content else []
         if topics:
             syntax_agent = RAGSyntaxAgent()
             syntax_results = syntax_agent.retrieve(topics)
@@ -586,29 +714,29 @@ class SelfRefinementAgent(PromptAgent):
     def generate_schema(self, critique_note):
         """
         Generate or update schema information using schema linking if enabled.
-        
+
         Args:
             critique_note (str): Critique note to guide schema generation
         """
-        schema_string = self.env.task_config.get('schema', '')
-        question = self.env.task_config.get('question', '')
+        schema_string = self.env.task_config.get("schema", "")
+        question = self.env.task_config.get("question", "")
         if self.use_schema_linking:
             # Schema Linking Agent (perform schema linking first)
             try:
                 schema_linking_result = self.schema_agent.run(question, critique_note)
                 logger.info(f"[MCP] Schema Linking: {schema_linking_result}")
-                
+
             except Exception as e:
                 logger.error(f"[MCP] Schema Linking failed: {e}")
 
     def validate_result_with_llm(self, question: str, result_csv_path: str) -> dict:
         """
         Validate query results using LLM to check for unnecessary columns, missing filters, or empty rows.
-        
+
         Args:
             question (str): The original question being answered
             result_csv_path (str): Path to the CSV file containing results
-            
+
         Returns:
             dict: Validation results containing:
                 - valid_result (bool): Whether the result is valid
@@ -617,8 +745,14 @@ class SelfRefinementAgent(PromptAgent):
                 - suggest_fix (str): Suggested fixes if any
         """
         import pandas as pd
+
         if not os.path.exists(result_csv_path):
-            return {"valid_result": False, "columns_not_needed": [], "result_empty": True, "suggest_fix": "No output was generated and no result.csv file was generated."}
+            return {
+                "valid_result": False,
+                "columns_not_needed": [],
+                "result_empty": True,
+                "suggest_fix": "No output was generated and no result.csv file was generated.",
+            }
         df = pd.read_csv(result_csv_path)
         sample_rows = df.head(3).to_dict(orient="records")
         null_counts = df.isnull().sum().to_dict()
@@ -626,7 +760,7 @@ class SelfRefinementAgent(PromptAgent):
             "columns": list(df.columns),
             "null_counts": null_counts,
             "num_rows": len(df),
-            "sample_rows": sample_rows
+            "sample_rows": sample_rows,
         }
         logger.info(f"Result Summary: {summary}")
 
@@ -651,32 +785,46 @@ class SelfRefinementAgent(PromptAgent):
         }}
         
         """
-        _, response = call_llm({
-            "model": self.model,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature
-        })
+        _, response = call_llm(
+            {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+        )
         try:
             # Extract JSON block containing "valid_result" using non-greedy matching
             match = re.search(r"\{[^{}]*\"valid_result\"[^{}]*\}", response)
             if match:
                 return json.loads(match.group())
             else:
-                return {"valid_result": False, "columns_not_needed": [], "result_empty": True, "suggest_fix": "No valid JSON match in response"}
+                return {
+                    "valid_result": False,
+                    "columns_not_needed": [],
+                    "result_empty": True,
+                    "suggest_fix": "No valid JSON match in response",
+                }
         except Exception as e:
-            return {"valid_result": False, "columns_not_needed": [], "result_empty": True, "suggest_fix": f"Exception parsing response: {e}"}
-    
+            return {
+                "valid_result": False,
+                "columns_not_needed": [],
+                "result_empty": True,
+                "suggest_fix": f"Exception parsing response: {e}",
+            }
+
     def _self_refine(self, original_sql, obs, error_msg=None, empty_result=False):
         """
         Attempt to refine a SQL query using LLM and RAG based on error or empty result.
-        
+
         Args:
             original_sql (str): The original SQL query to refine
             obs (str): Previous execution observation
             error_msg (str, optional): Error message if any
             empty_result (bool): Whether the previous execution returned empty results
-            
+
         Returns:
             tuple: (success, refined_sql, result, error_type, action)
                 - success (bool): Whether refinement was successful
@@ -701,21 +849,34 @@ class SelfRefinementAgent(PromptAgent):
             error_hint = self.construct_error_prompt(error_type)
 
             if not hasattr(self, "refinement_rag") or self.refinement_rag is None:
-                self.refinement_rag = RefinementLogRAG(log_path=self.refinement_log_path, dialect=self.dialect)
+                self.refinement_rag = RefinementLogRAG(
+                    log_path=self.refinement_log_path, dialect=self.dialect
+                )
 
             similar_text = self.format_similar_cases(
-                self.refinement_rag.retrieve_similar(original_sql, error_msg or "", error_type, self.base_top_k)
+                self.refinement_rag.retrieve_similar(
+                    original_sql, error_msg or "", error_type, self.base_top_k
+                )
             )
 
             prompt = self.compose_refinement_prompt(
-                original_sql, obs, critique_msg, error_hint, similar_text,
-                last_error_type == error_type, error_type, self.expected_csv_format, self.env.task_config.get('db', '')
+                original_sql,
+                obs,
+                critique_msg,
+                error_hint,
+                similar_text,
+                last_error_type == error_type,
+                error_type,
+                self.expected_csv_format,
+                self.env.task_config.get("db", ""),
             )
             logger.info(f"[Self-Refinement] Attempt {attempt + 1} Prompt: {prompt}")
-            
-            if hasattr(self, 'plan_critique'):
-                step_idx = self.env.task_config.get('current_step_idx', 0)
-                step_critique = self.plan_critique.get('critique_agent', {}).get(str(step_idx))
+
+            if hasattr(self, "plan_critique"):
+                step_idx = self.env.task_config.get("current_step_idx", 0)
+                step_critique = self.plan_critique.get("critique_agent", {}).get(
+                    str(step_idx)
+                )
                 if step_critique:
                     prompt += f"\n[Step Critique {step_idx}] {step_critique}"
 
@@ -725,41 +886,47 @@ class SelfRefinementAgent(PromptAgent):
                     if not critique_msg:
                         critique_msg = f"Error Type: {error_type}. [Error Description] {error_msg} \nThe SQL query might be using non-existent columns or tables. Please analyze the question and suggest the correct schema components."
                         linked_info = self.schema_agent.run(
-                            self.env.task_config.get('question', ''),
-                            critique_msg
+                            self.env.task_config.get("question", ""), critique_msg
                         )
 
                 if linked_info:
-                    self.env.task_config['schema'] = linked_info
+                    self.env.task_config["schema"] = linked_info
                     prompt += f"\nSchema Linking Info: {linked_info}"
                     logger.info(f"[Self-Refinement] Schema Linking Info: {linked_info}")
-                    logger.info(f"[Self-Refinement] Old Reference Plan: {self.reference_plan}")
+                    logger.info(
+                        f"[Self-Refinement] Old Reference Plan: {self.reference_plan}"
+                    )
                     logger.info("Generate New Reference Plan")
                     self.generate_reference_plan()
-                    logger.info(f"[Self-Refinement] New Reference Plan: {self.reference_plan}")
+                    logger.info(
+                        f"[Self-Refinement] New Reference Plan: {self.reference_plan}"
+                    )
             logger.info(f"[Self-Refinement] Prompt: {prompt}")
             response, action = self.predict(prompt)
             logger.info(f"[Self-Refinement] Attempt {attempt + 1} Response: {response}")
             logger.info(f"[Self-Refinement] Attempt {attempt + 1} Action: {action}")
-            if not action or not getattr(action, 'sql_query', ''):
+            if not action or not getattr(action, "sql_query", ""):
                 continue
             prompt_prefix = f" It is the SQL for {self.dialect.upper()} dialect."
             refined_sql = action.sql_query
-            
+
             obs, _ = self.env.step(action)
             critique_msg = self.critique_agent.critique_sql(
                 self.dialect,
-                refined_sql, self.reference_plan,
-                self.env.task_config.get('question', ''),
-                self.env.task_config.get('schema', ''),
-                self.env.task_config.get('db', ''),
-                evidence=self.env.task_config.get('evidence', ''),
+                refined_sql,
+                self.reference_plan,
+                self.env.task_config.get("question", ""),
+                self.env.task_config.get("schema", ""),
+                self.env.task_config.get("db", ""),
+                evidence=self.env.task_config.get("evidence", ""),
                 response=response,
                 execution_feedback=obs,
-                prompt_prefix=prompt_prefix
+                prompt_prefix=prompt_prefix,
             )
             is_error = "error" in obs.lower() or "exception" in obs.lower()
-            is_empty = ("no rows" in obs.lower() or "empty result" in obs.lower()) and not is_error
+            is_empty = (
+                "no rows" in obs.lower() or "empty result" in obs.lower()
+            ) and not is_error
 
             if not is_error and not is_empty:
                 return True, refined_sql, obs, error_type, action
@@ -767,10 +934,20 @@ class SelfRefinementAgent(PromptAgent):
             last_error_type = error_type
 
         return False, refined_sql, obs, error_type, action
-    def build_prompt(self, question, database, plan_step, critique_msg=None, execution_summary=None, syntax_reference=None, step_idx=None):
+
+    def build_prompt(
+        self,
+        question,
+        database,
+        plan_step,
+        critique_msg=None,
+        execution_summary=None,
+        syntax_reference=None,
+        step_idx=None,
+    ):
         """
         Build a comprehensive prompt for SQL generation.
-        
+
         Args:
             question (str): The user's question
             database (str): Database name
@@ -779,7 +956,7 @@ class SelfRefinementAgent(PromptAgent):
             execution_summary (str, optional): Summary of previous execution
             syntax_reference (str, optional): Reference syntax for the dialect
             step_idx (int, optional): Current step index
-            
+
         Returns:
             str: Complete prompt for SQL generation
         """
@@ -824,19 +1001,23 @@ class SelfRefinementAgent(PromptAgent):
             "   - If permission denied, try different paths\n"
             "   - Document any access issues for troubleshooting\n\n"
         )
-        
+
         prompt += f"[Current Plan]\n{plan_step}\n\n"
-        
-        if critique_msg and 'reasoning' in critique_msg:
-            reasoning = critique_msg['reasoning'].strip().replace("\n", " ")
+
+        if critique_msg and "reasoning" in critique_msg:
+            reasoning = critique_msg["reasoning"].strip().replace("\n", " ")
             prompt += f"[Critique]\n{reasoning}\n\n"
-            
-        if execution_summary and "UserWarning: BigQuery Storage module not found" not in execution_summary:
+
+        if (
+            execution_summary
+            and "UserWarning: BigQuery Storage module not found"
+            not in execution_summary
+        ):
             prompt += f"[Execution Result]\n{execution_summary}\n\n"
-            
+
         if syntax_reference:
             prompt += f"[Reference Syntax]\n{syntax_reference}\n\n"
-            
+
         # Add clear action constraints
         prompt += (
             "[Required Action Format]\n"
@@ -845,20 +1026,20 @@ class SelfRefinementAgent(PromptAgent):
         )
         if self.dialect == "bigquery":
             prompt += (
-                f"- Action: {BIGQUERY_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {BIGQUERY_EXEC_SQL.__name__}(sql_query="...",is_save=..., save_path=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
         elif self.dialect == "snowflake":
             prompt += (
-                f"- Action: {SNOWFLAKE_EXEC_SQL.__name__}(sql_query=\"...\",is_save=..., save_path=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {SNOWFLAKE_EXEC_SQL.__name__}(sql_query="...",is_save=..., save_path=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
         elif self.dialect == "sqlite":
             prompt += (
-                f"- Action: {LOCAL_DB_SQL.__name__}(file_path=\"...\", command=\"...\", output=\".../result.csv\")\n"
-                f"- Action: {Terminate.__name__}(output=\".../result.csv\")\n\n"
+                f'- Action: {LOCAL_DB_SQL.__name__}(file_path="...", command="...", output=".../result.csv")\n'
+                f'- Action: {Terminate.__name__}(output=".../result.csv")\n\n'
             )
-        
+
         # # Add step-specific instructions
         # if step_idx is not None and self.reference_plan and 'plan' in self.reference_plan:
         #     total_steps = len(self.reference_plan['plan'])
@@ -879,54 +1060,62 @@ class SelfRefinementAgent(PromptAgent):
         prompt += (
             "- The result matches the expected format\n"
             "- The data has been properly saved to result.csv\n"
-         )
-            
+        )
+
         prompt += "\nGenerate your next action."
         return prompt
 
-    def generate_critique_msg(self, current_plan, sql_query, obs, response) -> Optional[Dict]:
+    def generate_critique_msg(
+        self, current_plan, sql_query, obs, response
+    ) -> Optional[Dict]:
         """
         Generate a critique message for the current SQL query.
-        
+
         Args:
             current_plan (str): Current execution plan
             sql_query (str): The SQL query to critique
             obs (str): Execution observation
             response (str): LLM response
-            
+
         Returns:
             Optional[Dict]: Critique message containing reasoning and suggestions
         """
-        schema_string = self.env.task_config.get('schema', '')
-        evidence = self.env.task_config.get('evidence', '')
-        question = self.env.task_config.get('question', '')
+        schema_string = self.env.task_config.get("schema", "")
+        evidence = self.env.task_config.get("evidence", "")
+        question = self.env.task_config.get("question", "")
         critique_msg = self.critique_agent.critique_sql(
             self.dialect,
-            sql_query, current_plan, question, schema_string, evidence,
-            response=response, execution_feedback=obs,
-            prompt_prefix=f" It is the SQL for {self.dialect.upper()} dialect."
+            sql_query,
+            current_plan,
+            question,
+            schema_string,
+            evidence,
+            response=response,
+            execution_feedback=obs,
+            prompt_prefix=f" It is the SQL for {self.dialect.upper()} dialect.",
         )
         logger.info(f"[MCP] Critique: {critique_msg}")
         if critique_msg:
-            self.reference_plan['critique_notes'].append(critique_msg)
+            self.reference_plan["critique_notes"].append(critique_msg)
         return critique_msg
+
     def run(self):
         """
         Main execution method implementing the MCP (Multi-step Critique and Planning) loop.
-        
+
         The function follows these main steps:
         1. Initialize schema agent based on mode (file or SQL)
         2. Generate and refine initial plan
         3. Execute MCP loop for SQL generation, critique, and refinement
         4. Handle validation and termination
-        
+
         The MCP loop includes:
         - SQL query generation
         - Execution and error handling
         - Self-refinement when needed
         - Result validation
         - Progress tracking
-        
+
         Returns:
             tuple: (done: bool, result: str)
                 - done: Whether the task is complete
@@ -942,23 +1131,44 @@ class SelfRefinementAgent(PromptAgent):
         # --- Initialize schema agent based on mode ---
         if self.schema_link_mode == "file":
             from spider_agent.agent.schema_agent import SchemaAgent, SchemaAgentEnv
+
             self.schema_agent_env = SchemaAgentEnv(base_dir=self.env.mnt_dir)
-            self.schema_agent = SchemaAgent(self.schema_agent_env, llm_predict=self.predict)
+            self.schema_agent = SchemaAgent(
+                self.schema_agent_env, llm_predict=self.predict
+            )
         else:
-            from spider_agent.agent.database_schema_agent import DBSchemaAgentEnv, SQLSchemaLinkingAgent
-            folder_name = self.find_ddl_folder_name(self.env.mnt_dir, self.env.task_config.get('db'))
-            self.schema_agent_env = DBSchemaAgentEnv(base_dir=self.env.mnt_dir,schema_path=folder_name)
-            self.schema_agent = SQLSchemaLinkingAgent(self.schema_agent_env, llm_predict=self.predict,llm_step=self.env.step,db_type=self.dialect,db_name=self.env.task_config.get('db'))
-            
+            from spider_agent.agent.database_schema_agent import (
+                DBSchemaAgentEnv,
+                SQLSchemaLinkingAgent,
+            )
+
+            folder_name = self.find_ddl_folder_name(
+                self.env.mnt_dir, self.env.task_config.get("db")
+            )
+            self.schema_agent_env = DBSchemaAgentEnv(
+                base_dir=self.env.mnt_dir, schema_path=folder_name
+            )
+            self.schema_agent = SQLSchemaLinkingAgent(
+                self.schema_agent_env,
+                llm_predict=self.predict,
+                llm_step=self.env.step,
+                db_type=self.dialect,
+                db_name=self.env.task_config.get("db"),
+            )
+
         # --- Generate initial plan if not exists ---
         if not self.reference_plan:
             self.generate_schema(critique_msg)
             self.generate_reference_plan()
             # Initialize plan components after generation
             self.plan_steps = self.reference_plan.get("plan", [])
-            self.expected_csv_format = self.reference_plan.get("expected_csv_format", "")
-            
-        logger.info(f"[MCP] Generated Plan in the Refinement Agent: {self.reference_plan}")
+            self.expected_csv_format = self.reference_plan.get(
+                "expected_csv_format", ""
+            )
+
+        logger.info(
+            f"[MCP] Generated Plan in the Refinement Agent: {self.reference_plan}"
+        )
 
         # --- Plan Refinement Loop ---
         max_plan_refine, refine_count = 3, 0
@@ -967,10 +1177,10 @@ class SelfRefinementAgent(PromptAgent):
 
         while refine_count < max_plan_refine:
             success, critique_json_str = self.critique_agent.critique_plan(
-                plan=self.reference_plan['plan'],
-                expected_csv_format=self.reference_plan.get('expected_csv_format', ''),
-                question=self.env.task_config.get('question', ''),
-                schema_string=self.env.task_config.get('schema', '')
+                plan=self.reference_plan["plan"],
+                expected_csv_format=self.reference_plan.get("expected_csv_format", ""),
+                question=self.env.task_config.get("question", ""),
+                schema_string=self.env.task_config.get("schema", ""),
             )
             if not success:
                 logger.error("Failed to critique plan. Skipping plan refinement.")
@@ -978,43 +1188,51 @@ class SelfRefinementAgent(PromptAgent):
             self.plan_critique = json.loads(critique_json_str)
             logger.info(f"[MCP] Plan Critique: {self.plan_critique}")
 
-            if self.plan_critique['update_plan']:
-                self.reference_plan.setdefault('critique_notes', []).append(self.plan_critique['critique'])
+            if self.plan_critique["update_plan"]:
+                self.reference_plan.setdefault("critique_notes", []).append(
+                    self.plan_critique["critique"]
+                )
                 plan_prompt = (
                     f"Original Plan:\n{self.reference_plan['plan']}\n\n"
                     f"""Critique Notes:\n\n{self.reference_plan['critique_notes']}"""
                     "\n\nPlease revise the plan to address the above critique notes. Output a numbered step-by-step plan."
                 )
                 revised_plan_result = self.planner_agent.generate_plan(
-                    database_id=self.env.task_config.get('db', ''),
-                    question=self.env.task_config.get('question', ''),
-                    schema_string=self.env.task_config.get('schema', ''),
-                    evidence=self.env.task_config.get('evidence', ''),
+                    database_id=self.env.task_config.get("db", ""),
+                    question=self.env.task_config.get("question", ""),
+                    schema_string=self.env.task_config.get("schema", ""),
+                    evidence=self.env.task_config.get("evidence", ""),
                     prompt_prefix=plan_prompt,
-                    dialect=self.dialect
+                    dialect=self.dialect,
                 )
                 if isinstance(revised_plan_result, dict):
-                    revised_plan_result['critique_notes'] = self.reference_plan['critique_notes']
+                    revised_plan_result["critique_notes"] = self.reference_plan[
+                        "critique_notes"
+                    ]
                     self.reference_plan = revised_plan_result
                     # Update plan components after refinement
                     self.plan_steps = self.reference_plan.get("plan", [])
-                    self.expected_csv_format = self.reference_plan.get("expected_csv_format", "")
+                    self.expected_csv_format = self.reference_plan.get(
+                        "expected_csv_format", ""
+                    )
                 else:
-                    self.reference_plan['plan'] = revised_plan_result
+                    self.reference_plan["plan"] = revised_plan_result
                     self.plan_steps = revised_plan_result
                 refine_count += 1
             else:
                 break
 
         # --- Retrieve BigQuery syntax reference if needed ---
-        if self.rag_syntax and self.env.task_config.get('instance_id', '').startswith('bq'):
+        if self.rag_syntax and self.env.task_config.get("instance_id", "").startswith(
+            "bq"
+        ):
             self.maybe_retrieve_syntax_reference()
 
         # --- Main MCP Loop: SQL generation, critique, and refinement ---
         while not done and step_idx < self.max_steps:
-            question = self.env.task_config.get('question', '')
-            plan_step = self.reference_plan['plan']  # Use entire plan
-            
+            question = self.env.task_config.get("question", "")
+            plan_step = self.reference_plan["plan"]  # Use entire plan
+
             # --- Generate execution summary ---
             execution_summary = ""
             if "error" in obs.lower() or "exception" in obs.lower():
@@ -1027,15 +1245,20 @@ class SelfRefinementAgent(PromptAgent):
                 execution_summary = obs
 
             # --- Build and execute prompt ---
-            syntax_ref = self.syntax_reference if self.rag_syntax and self.env.task_config.get('instance_id', '').startswith('bq') else None
+            syntax_ref = (
+                self.syntax_reference
+                if self.rag_syntax
+                and self.env.task_config.get("instance_id", "").startswith("bq")
+                else None
+            )
             prompt = self.build_prompt(
-                question, 
-                self.env.task_config.get('db', ''),
-                plan_step, 
-                critique_msg, 
-                execution_summary, 
+                question,
+                self.env.task_config.get("db", ""),
+                plan_step,
+                critique_msg,
+                execution_summary,
                 syntax_reference=syntax_ref,
-                step_idx=step_idx
+                step_idx=step_idx,
             )
 
             # Execute prompt and get response
@@ -1051,7 +1274,7 @@ class SelfRefinementAgent(PromptAgent):
             logger.info(f"Step {step_idx + 1} Prompt : {prompt}")
             logger.info(f"Step {step_idx + 1} Response : {response}")
             logger.info("Step %d: %s", step_idx + 1, action)
-            sql_query = getattr(action, 'sql_query', None)
+            sql_query = getattr(action, "sql_query", None)
 
             # --- Check for repeated actions ---
             action_hash = action
@@ -1069,20 +1292,37 @@ class SelfRefinementAgent(PromptAgent):
 
             # --- Check if action is a bash command ---
             is_bash_command = False
-            if hasattr(action, 'command'):
-                bash_commands = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'sort', 'uniq', 'cut', 'awk', 'sed']
-                cmd = action.command.lower() if action.command else ''
+            if hasattr(action, "command"):
+                bash_commands = [
+                    "ls",
+                    "cat",
+                    "head",
+                    "tail",
+                    "grep",
+                    "find",
+                    "wc",
+                    "sort",
+                    "uniq",
+                    "cut",
+                    "awk",
+                    "sed",
+                ]
+                cmd = action.command.lower() if action.command else ""
                 is_bash_command = any(cmd.startswith(b) for b in bash_commands)
 
             # --- Self-Refinement Logic ---
             is_error = "error" in obs.lower() or "exception" in obs.lower()
-            is_empty = ("no rows" in obs.lower() or "empty result" in obs.lower()) and not is_error
+            is_empty = (
+                "no rows" in obs.lower() or "empty result" in obs.lower()
+            ) and not is_error
 
             if self.self_refinement_enabled and sql_query and (is_error or is_empty):
                 logger.info("Triggering self-refinement due to error or empty result.")
                 error_msg = obs if is_error else None
                 empty_result = is_empty
-                result = self._self_refine(sql_query, obs, error_msg=error_msg, empty_result=empty_result)
+                result = self._self_refine(
+                    sql_query, obs, error_msg=error_msg, empty_result=empty_result
+                )
                 if result is None:
                     logger.warning("[Self-Refinement] Returned None. Skipping.")
                     continue
@@ -1102,25 +1342,40 @@ class SelfRefinementAgent(PromptAgent):
             if not is_error and not is_empty and not is_bash_command:
                 if isinstance(action, Terminate):
                     step_idx += 1
-                elif isinstance(action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)):
+                elif isinstance(
+                    action, (BIGQUERY_EXEC_SQL, SNOWFLAKE_EXEC_SQL, LOCAL_DB_SQL)
+                ):
                     step_idx += 1
-                    critique_msg = self.generate_critique_msg(plan_step, sql_query, obs, response)
+                    critique_msg = self.generate_critique_msg(
+                        plan_step, sql_query, obs, response
+                    )
 
             # --- Result Validation ---
             if self.validate_result and isinstance(action, Terminate):
                 validate_passed = True
                 question = self.env.task_config.get("question", "")
-                result_csv_path = os.path.join(self.env.mnt_dir, getattr(action, "output", "result.csv").split("/")[-1])
+                result_csv_path = os.path.join(
+                    self.env.mnt_dir,
+                    getattr(action, "output", "result.csv").split("/")[-1],
+                )
                 logger.info(f"[Validation] Result CSV Path: {result_csv_path}")
 
-                validation_feedback = self.validate_result_with_llm(question, result_csv_path)
+                validation_feedback = self.validate_result_with_llm(
+                    question, result_csv_path
+                )
                 logger.info(f"[Validation Feedback] {validation_feedback}")
 
                 if isinstance(validation_feedback, dict) and (
-                    validation_feedback.get("result_empty") or validation_feedback.get("columns_not_needed") or not validation_feedback.get("valid_result")
+                    validation_feedback.get("result_empty")
+                    or validation_feedback.get("columns_not_needed")
+                    or not validation_feedback.get("valid_result")
                 ):
                     validate_passed = False
-                    critique_msg = {"reasoning": validation_feedback.get("analysis", "Output validation failed.")}
+                    critique_msg = {
+                        "reasoning": validation_feedback.get(
+                            "analysis", "Output validation failed."
+                        )
+                    }
 
                 if validate_passed and validation_feedback.get("valid_result"):
                     done = True
@@ -1129,7 +1384,9 @@ class SelfRefinementAgent(PromptAgent):
                     break
                 else:
                     done = False
-                    logger.info("Validation failed. Continuing to next refinement step.")
+                    logger.info(
+                        "Validation failed. Continuing to next refinement step."
+                    )
                     continue
 
             elif isinstance(action, Terminate) and not self.validate_result:
