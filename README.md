@@ -141,7 +141,7 @@ If you use this code in your research, please cite our paper:
 @article{your-paper-id,
   title={LLM-Based SQL Generation: Prompting, Self-Refinement, and Adaptive Weighted Majority Voting},
   author={Yu-Jie Yang,Hung-Fu Chang,Po-An Chen},
-  archivePrefix={arXiv},,
+  archivePrefix={arXiv},
   year={2026}
 }
 ```
