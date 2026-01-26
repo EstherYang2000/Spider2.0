@@ -1,79 +1,124 @@
-#!/bin/bash
-# Update the repository with latest changes
-git pull --no-rebase origin main
+#!/usr/bin/env bash
+set -e  # Exit immediately if a command fails
+set -u  # Treat unset variables as errors
 
-# Activate the Spider2 virtual environment
-source methods/spider-agent/spider2/bin/activate
+#######################################
+# Global configuration
+#######################################
+REPO_BRANCH="main"
+VENV_PATH="methods/spider-agent/spider2/bin/activate"
+AGENT_DIR="methods/spider-agent-lite"
+EVAL_DIR="spider2-lite/evaluation_suite"
 
-# Change to the spider-agent-lite directory
-cd methods/spider-agent-lite
+#######################################
+# Helper functions
+#######################################
 
-# Run the initial experiment with GPT-4.1 model
-# Parameters:
-#   --model: Specifies the language model to use
-#   -s [test8:suffix]: Specifies the suffix to use
-#   --example_index [32-33:index]: Processes examples 32 and 33
-#   --self_refinement: Enables self-refinement mechanism
-#   --plan: Enables planning
-#   --rag_syntax: Enables RAG syntax
-#   --validate_result: Enables result validation
-#   --overwriting: Allows overwriting existing results
-python run.py --model gpt-4.1-2025-04-14 -s test8 --example_index 32-33 --self_refinement --plan --rag_syntax --validate_result --overwriting
+activate_env() {
+  echo ">> Activating Spider2 virtual environment"
+  source "$VENV_PATH"
+}
 
-# Process results for GPT-4.1 model
-# This generates submission data for evaluation
-python get_spider2lite_submission_data.py \
-	--experiment_suffix gpt-4.1-2025-04-14-test8-plan-self-refinement \
-	--results_folder_name ../../spider2-lite/evaluation_suite/gpt-4.1-2025-04-14-test8-plan-self-refinement \
-	
-# Return to the root directory
-cd ../..
-# Change to the evaluation suite directory
-cd spider2-lite/evaluation_suite
-# Evaluate the Grok-3-beta results
-# Parameters:
-#   --result_dir: Directory containing the results
-#   --mode exec_result: Evaluates execution results
-#   --max_evaluate_num 30: Maximum number of examples to evaluate
-python evaluate.py \
-	--result_dir gpt-4.1-2025-04-14-test8-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 30
+update_repo() {
+  echo ">> Pulling latest code from $REPO_BRANCH"
+  git pull --no-rebase origin "$REPO_BRANCH"
+}
 
+run_agent() {
+  local model=$1
+  local suffix=$2
+  local index_range=$3
 
-python run.py --model grok-3-beta -s test24 --example_index 60-80 --self_refinement --plan --rag_syntax --validate_result --overwriting
+  echo ">> Running Spider-Agent-lite"
+  echo "   Model: $model"
+  echo "   Index: $index_range"
+  echo "   Suffix: $suffix"
 
-# Process results for GPT-4.1 model
-# This generates submission data for evaluation
-python get_spider2lite_submission_data.py \
-	--experiment_suffix  grok-3-beta-test24-plan-self-refinement\
-	--results_folder_name ../../spider2-lite/evaluation_suite/grok-3-beta-test24-plan-self-refinement
+  python run.py \
+    --model "$model" \
+    -s "$suffix" \
+    --example_index "$index_range" \
+    --self_refinement \
+    --plan \
+    --rag_syntax \
+    --validate_result \
+    --overwriting
+}
 
-# Return to the root directory
-cd ../..
-# Change to the evaluation suite directory
-cd spider2-lite/evaluation_suite
-# Evaluate the grok-3-beta results
-# Parameters:
-#   --result_dir: Directory containing the results
-#   --mode exec_result: Evaluates execution results
-#   --max_evaluate_num 20: Maximum number of examples to evaluate
+generate_submission() {
+  local exp_suffix=$1
+  local result_dir=$2
 
-python evaluate.py \
-	--result_dir grok-3-beta-test24-plan-self-refinement --mode exec_result --mode exec_result --max_evaluate_num 20
+  echo ">> Generating submission data: $exp_suffix"
 
-python evaluate.py \
-	--result_dir vote/data/gpt_4.1_grok3_vote_100_rwma --mode exec_result --mode exec_result
+  python get_spider2lite_submission_data.py \
+    --experiment_suffix "$exp_suffix" \
+    --results_folder_name "$result_dir"
+}
 
-python run.py --model gemini-2.5-pro-preview-05-06 -s test6 --example_index 0-1 --self_refinement --plan --rag_syntax --validate_result --overwriting
+evaluate_results() {
+  local result_dir=$1
+  local max_num=${2:-""}
 
+  echo ">> Evaluating results: $result_dir"
 
-python get_spider2lite_submission_data.py \
-	--experiment_suffix  gemini-2.5-pro-preview-05-06-test6-plan-self-refinement\
-	--results_folder_name ../../spider2-lite/evaluation_suite/gemini-2.5-pro-preview-05-06-test6-plan-self-refinement
+  if [[ -n "$max_num" ]]; then
+    python evaluate.py \
+      --result_dir "$result_dir" \
+      --mode exec_result \
+      --max_evaluate_num "$max_num"
+  else
+    python evaluate.py \
+      --result_dir "$result_dir" \
+      --mode exec_result
+  fi
+}
 
-python evaluate.py \
-	--result_dir gemini-2.5-pro-preview-05-06-test6-plan-self-refinement --mode exec_result --mode exec_result
+#######################################
+# Main pipeline
+#######################################
 
+update_repo
+activate_env
 
-python evaluate.py \
-	--result_dir vote/data/gpt_4.1_grok3_vote_100_rwma --mode exec_result --mode exec_result
+cd "$AGENT_DIR"
 
+# ---------- GPT-4.1 ----------
+run_agent "gpt-4.1-2025-04-14" "test8" "32-33"
+
+generate_submission \
+  "gpt-4.1-2025-04-14-test8-plan-self-refinement" \
+  "../../$EVAL_DIR/gpt-4.1-2025-04-14-test8-plan-self-refinement"
+
+cd ../../"$EVAL_DIR"
+evaluate_results "gpt-4.1-2025-04-14-test8-plan-self-refinement" 30
+
+# ---------- Grok-3-beta ----------
+cd ../../"$AGENT_DIR"
+
+run_agent "grok-3-beta" "test24" "60-80"
+
+generate_submission \
+  "grok-3-beta-test24-plan-self-refinement" \
+  "../../$EVAL_DIR/grok-3-beta-test24-plan-self-refinement"
+
+cd ../../"$EVAL_DIR"
+evaluate_results "grok-3-beta-test24-plan-self-refinement" 20
+
+# ---------- Gemini 2.5 ----------
+cd ../../"$AGENT_DIR"
+
+run_agent "gemini-2.5-pro-preview-05-06" "test6" "0-1"
+
+generate_submission \
+  "gemini-2.5-pro-preview-05-06-test6-plan-self-refinement" \
+  "../../$EVAL_DIR/gemini-2.5-pro-preview-05-06-test6-plan-self-refinement"
+
+cd ../../"$EVAL_DIR"
+evaluate_results "gemini-2.5-pro-preview-05-06-test6-plan-self-refinement"
+
+# ---------- Voting Evaluation ----------
+echo ">> Evaluating ensemble voting results"
+evaluate_results "vote/data/gpt_4.1_grok3_vote_100_rwma"
+
+echo "✅ All experiments finished successfully."
