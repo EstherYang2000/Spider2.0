@@ -4,7 +4,7 @@ This document describes the **ReCAPAgent** system implemented in the Spider2-Lit
 
 ## ReCAPAgent Architecture
 
-![ReCAPAgent Architecture](figs/ReCAPAgent_Architecture.png)
+![ReCAPAgent Architecture](methods/spider-agent-lite/figs/ReCAPAgent_Architecture.png)
 
 Expanding upon the Spider-Agent, we develop the **ReCAPAgent-SQL pipeline**. This approach integrates multiple specialized agents focused on:
 
